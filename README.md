@@ -1,0 +1,2 @@
+# embryology_data_analysis_vba_demo
+Excel/VBA を用いて胚培養データを自動集計するためのデモ用ファイルです。
