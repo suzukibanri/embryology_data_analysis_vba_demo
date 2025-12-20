@@ -1,0 +1,1950 @@
+'各院別に移植サマリーを出力するマクロです
+
+'Public gClinicID As String
+'Public gClinicName As String
+'Public gYear As String
+Public globalET_Count As Object      ' 件数ディクショナリ（Key: 年_月_院_方法）
+Public globalEgg_Count As Object     ' 卵数ディクショナリ（Key: 年_月_院_方法）
+
+Sub ET_ClinicStats_01_CreateReportSheet()
+
+    Dim ws As Worksheet
+    Dim pt As pivotTable
+    Dim rng As Range
+    Dim cell As Range
+    Dim dict As Object
+    Dim Yearcount As Integer
+    Dim row As Long
+    Dim col As Long
+    Dim clinicCol As Long
+    Dim i As Integer
+    Dim rng2 As Range
+    
+    Call SetGlobalVars
+
+    ' 既存の「採卵サマリー」シートがあれば削除
+    On Error Resume Next
+    Set ws = ThisWorkbook.Sheets("移植_月別レポート")
+    On Error GoTo 0
+
+    If Not ws Is Nothing Then
+        Application.DisplayAlerts = False
+        ws.Delete
+        Application.DisplayAlerts = True
+    End If
+
+    ' 新しいシートを追加して名前を設定
+    Set ws = ThisWorkbook.Sheets.Add(After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.count))
+    ws.name = "移植_月別レポート"
+    
+        ' タイトルや見出しを入力
+With ws
+    With .Cells(2, 2)
+        .value = "移植_月別レポート "  ' B2
+        .Font.Size = 14
+        .Font.Bold = True
+    End With
+
+    .Columns(2).AutoFit   ' B列の列幅を自動調整
+
+    ' C2: 対象院
+    With .Cells(2, 3)
+        .value = "対象院"
+        .Font.Size = 12         ' フォントサイズ12
+        .Font.Bold = True       ' 太字
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+
+    ' C3: gClinicName
+    With .Cells(3, 3)
+        .value = gClinicName
+        .Font.Size = 12
+        .Font.Bold = True
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+
+    ' D2: 年度
+    With .Cells(2, 4)
+        .value = "年度"
+        .Font.Size = 12
+        .Font.Bold = True
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+
+    ' D3: gYear
+    With .Cells(3, 4)
+        .value = gYear
+        .Font.Size = 12
+        .Font.Bold = True
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+
+    ' G2: 月の検索
+    With .Cells(2, 6)
+        .value = "月の検索"
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+
+    ' C列とD列の幅を自動調整
+    .Columns(3).AutoFit
+'    .Columns(4).AutoFit
+End With
+
+    
+With Range("C2:D3")
+    .Borders.LineStyle = xlContinuous ' 罫線を引く
+End With
+
+Range("C2:D2").Interior.Color = RGB(221, 235, 247) ' 青く塗る
+
+With Range("F2:F3")
+    .Borders.LineStyle = xlContinuous ' 罫線を引く
+End With
+
+Range("F2").Interior.Color = RGB(252, 228, 214) ' オレンジに塗る
+
+
+    Dim monthCell As Range
+    Dim startRow As Long, startCol As Long
+    Dim r As Long, c As Long
+    
+    Dim monthNames As Variant
+    monthNames = Array("1月", "2月", "3月", "4月", "5月", "6月", _
+                       "7月", "8月", "9月", "10月", "11月", "12月")
+                       
+
+' F3 に月プルダウン設定
+Dim monthStr As String
+monthStr = Join(monthNames, ",")
+
+With ws.Range("F3")
+    ' プルダウン（データ検証）設定
+    With .Validation
+        .Delete
+        .Add Type:=xlValidateList, AlertStyle:=xlValidAlertStop, _
+            Operator:=xlBetween, Formula1:=monthStr
+        .IgnoreBlank = True
+        .InCellDropdown = True
+    End With
+
+    ' 上下中央揃え（水平・垂直中央）
+    .HorizontalAlignment = xlCenter
+    .VerticalAlignment = xlCenter
+End With
+
+    Dim labels As Variant
+labels = Array( _
+    "平均女性年齢（ET時）", _
+    "平均女性年齢（OPU時）", _
+    "平均男性年齢（OPU時）", _
+    "移植件数", _
+    "卵数", _
+    "ガードナーAA, AB, BA", _
+    "ガードナーBB", _
+    "ガードナー C含む（CC以外）", _
+    "ガードナー CC", _
+    "hCG陽性率", _
+    "GS確認率", _
+    "FHB確認率", _
+    "出産率" _
+)
+
+    
+    startRow = 6
+    startCol = 2 ' B列
+
+    For i = 0 To 11
+        ' 配置位置計算
+        r = startRow + 17 * (i \ 3)
+        c = startCol + 15 * (i Mod 3)
+
+        ' 月タイトル
+        Cells(r, c).value = monthNames(i)
+        With Cells(r, c)
+            .Font.Bold = True
+            .Font.Size = 14
+        End With
+
+        ' ラベル書き込み
+        Dim j As Integer
+        For j = 0 To UBound(labels)
+            Cells(r + j + 2, c).value = labels(j)
+        Next j
+        
+' ========================
+' 「項目 × 分類」に "-" を入力
+' ========================
+Dim targetRows As Variant
+targetRows = Array(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12) ' ラベルの行インデックス（labels の並び順）
+
+Dim targetCols As Variant
+targetCols = Array(1, 3, 5, 7, 9, 11) ' 分類の列オフセット（All ET ～ その他）
+
+Dim tr As Variant, tc As Variant
+For Each tr In targetRows
+    For Each tc In targetCols
+        ws.Cells(r + tr + 2, c + tc).value = "-"
+    Next tc
+Next tr
+
+        
+   ' ヘッダー
+Cells(r + 1, c + 1).value = "All ET"
+Cells(r + 1, c + 3).value = "SBT"
+Cells(r + 1, c + 5).value = "DBT"
+Cells(r + 1, c + 7).value = "2StepET"
+Cells(r + 1, c + 9).value = "cleavage-Stage ET"
+Cells(r + 1, c + 11).value = "その他"
+
+        
+        ' 罫線
+
+Set rng2 = ws.Range(ws.Cells(r, c), ws.Cells(r + 15, c + 12)) ' 範囲：17行分（1?17）
+
+Dim idx As Long
+Dim lineRows As Variant
+lineRows = Array(1, 2, 5, 7, 11, 15)
+
+' まずすべての罫線をクリア
+rng2.Borders.LineStyle = xlNone
+
+' === 背景色の設定 ===
+
+' 1番目の線の上（行 r）
+ws.Range(ws.Cells(r, c), ws.Cells(r, c + 12)).Interior.Color = RGB(255, 255, 255) ' 白
+
+' 1番目と2番目の線の間（行 r+1）
+ws.Range(ws.Cells(r + 1, c), ws.Cells(r + 1, c + 12)).Interior.Color = RGB(242, 242, 242) ' 灰色
+
+' 2番目と一番下の線の間（行 r+2 ～ r+16）
+ws.Range(ws.Cells(r + 2, c), ws.Cells(r + 14, c + 12)).Interior.Color = RGB(255, 255, 255) ' 白
+
+
+' 指定行にだけ下罫線を引く
+For idx = 0 To UBound(lineRows)
+    Dim rowIndex As Long
+    rowIndex = r + lineRows(idx) - 1
+
+        ' 通常の処理（c?c+6）
+        With ws.Range(ws.Cells(rowIndex, c), ws.Cells(rowIndex, c + 12)).Borders(xlEdgeBottom)
+            .LineStyle = xlContinuous
+            .ColorIndex = xlAutomatic
+            If lineRows(idx) = 1 Or lineRows(idx) = 15 Then
+                .Weight = xlThick
+            Else
+                .Weight = xlThin
+            End If
+        End With
+Next idx
+
+' === 戻るボタン作成 ===
+Dim btnBack As Button
+Set btnBack = ws.Buttons.Add( _
+    Cells(r + 1, c + 7).Left + 320, _
+    Cells(r + 1, c + 7).Top, _
+    50, 20) ' 幅50, 高さ20（調整可）
+
+With btnBack
+    .Caption = "戻る"
+    .OnAction = "GoToTopCell"
+    .name = "btnBack_" & i  ' 一意な名前
+End With
+
+    Next i
+    
+        With Range("B6:AR71")
+        .VerticalAlignment = xlVAlignCenter
+        .HorizontalAlignment = xlCenter
+    End With
+    
+    Columns("B:B").ColumnWidth = 25
+    Columns("Q:Q").ColumnWidth = 25
+    Columns("AF:AF").ColumnWidth = 25
+    
+    
+    Dim btn As Button
+Dim topLeftCell As Range
+Set topLeftCell = ws.Range("G2")
+
+' ボタン作成（位置調整済み）
+Set btn = ws.Buttons.Add( _
+    topLeftCell.Left + 20, _
+    topLeftCell.Top + 10, _
+    80, 25)
+
+With btn
+    .Caption = "検索"
+    .name = "btnSearch"
+    .OnAction = "ET_SearchMonthTitle" ' マクロ名を設定する場合
+End With
+
+    Dim hbtn As Button
+    Dim HtopLeftCell As Range
+    Set HtopLeftCell = ws.Range("I2") ' I2を基準に
+    
+        ' ボタン追加（位置・サイズを自由に指定）
+    Set hbtn = ws.Buttons.Add( _
+        HtopLeftCell.Left + 10, _
+        HtopLeftCell.Top + 9, _
+        100, 25)
+
+    With hbtn
+        .OnAction = "GoBackHome"
+        .Text = "タイトルへ戻る"
+        .name = "btn_操作画面"
+    End With
+
+End Sub
+Sub ET_ClinicStats_02_ETcount()
+
+    ' ==== グローバル変数初期化 ====
+    Set globalET_Count = CreateObject("Scripting.Dictionary")
+    Set globalEgg_Count = CreateObject("Scripting.Dictionary")
+
+    ' ==== シート・変数設定 ====
+    Dim wsPivot As Worksheet, wsSummary As Worksheet
+    Set wsPivot = ThisWorkbook.Sheets("S07_移植件数")
+    Set wsSummary = ThisWorkbook.Sheets("移植_月別レポート")
+    
+    Dim pt As pivotTable
+    Set pt = wsPivot.PivotTables("P07_移植件数")
+
+    Dim yearCol As Long, methodRow As Long, clinicRow As Long
+    Dim lastRow As Long, lastCol As Long
+    yearCol = pt.TableRange2.Column
+    methodRow = pt.RowRange.row - 1
+    clinicRow = pt.RowRange.row
+    lastRow = pt.TableRange2.row + pt.TableRange2.Rows.count - 1
+    lastCol = pt.TableRange2.Column + pt.TableRange2.Columns.count - 1
+
+    ' ==== 件数データ集計 ====
+    Dim ET_Count As Object: Set ET_Count = CreateObject("Scripting.Dictionary")
+    Dim r As Long, c As Long
+    Dim currentYear, currentMonth, rowValue
+    Dim prevClinic, prevMethod, clinic, method, value, ymKey
+
+For r = clinicRow + 1 To lastRow - 1
+    rowValue = wsPivot.Cells(r, yearCol).value
+
+    ' ==== 年度取得 ====
+    If IsNumeric(rowValue) And Len(rowValue) = 4 Then
+        currentYear = rowValue
+    ElseIf currentYear <> "" Then
+        currentMonth = Replace(rowValue, " 月", "")
+        If IsNumeric(currentMonth) Then
+            For c = yearCol + 1 To lastCol
+                ' === 移植方法と院識別番号の取得 ===
+                If wsPivot.Cells(methodRow, c).value <> "" Then prevMethod = Trim(wsPivot.Cells(methodRow, c).value)
+                method = prevMethod
+                If wsPivot.Cells(clinicRow, c).value <> "" Then prevClinic = Trim(wsPivot.Cells(clinicRow, c).value)
+                clinic = Format(prevClinic, "00")
+
+                value = wsPivot.Cells(r, c).value
+
+                ' === フィルター条件：gClinicIDとgYearに一致するものだけ ===
+                If method <> "" And clinic <> "" And IsNumeric(value) Then
+                    If clinic = gClinicID And currentYear = gYear Then
+                        ymKey = currentYear & "_" & Format(currentMonth, "00") & "_" & Format(clinic, "00") & "_" & method
+                        If Not ET_Count.Exists(ymKey) Then
+                            ET_Count.Add ymKey, value
+                        Else
+                            ET_Count(ymKey) = ET_Count(ymKey) + value
+                        End If
+                    End If
+                End If
+            Next c
+        End If
+    End If
+Next r
+
+    ' ==== 出力準備 ====
+    Dim outputMethodList As Variant: outputMethodList = Array("1BT", "2BT", "2StepET", "Cleavage", "想定外")
+    Dim correctHalfList As Variant: correctHalfList = Array("2BT", "2StepET", "2分割胚", "2想定外STAGE", "混在：1想定外 + 他")
+
+    Dim monthDict As Object: Set monthDict = CreateObject("Scripting.Dictionary")
+    Dim keyX, yearX, monX, clinicX
+    For Each keyX In ET_Count.keys
+        Dim partsX: partsX = Split(keyX, "_")
+        If UBound(partsX) = 3 Then
+            yearX = partsX(0): monX = partsX(1)
+            If Not monthDict.Exists(yearX & "_" & monX) Then monthDict.Add yearX & "_" & monX, True
+        End If
+    Next
+
+    Dim sortedMonths As Collection: Set sortedMonths = SortDictionaryKeys(monthDict)
+
+    ' ==== 出力処理 ====
+    Dim iMonth As Long, k As Long
+    Dim rowBase As Long, colBase As Long
+    Dim cntX, eggX, mthX, outKeyX
+    Dim all_cnt, all_egg
+    Dim gClinicCode As String: gClinicCode = gClinicID ' 院番号
+
+    For iMonth = 1 To sortedMonths.count
+    If iMonth > 12 Then Exit For ' 12ヶ月までに制限
+
+        Dim ymX: ymX = sortedMonths(iMonth)
+        yearX = Split(ymX, "_")(0)
+        monX = Split(ymX, "_")(1)
+
+        ' === 出力位置（C11基準、15列/19行 間隔）===
+        rowBase = 11 + ((iMonth - 1) \ 3) * 17
+        colBase = 3 + ((iMonth - 1) Mod 3) * 15
+
+        all_cnt = 0
+        all_egg = 0
+
+        ' === 各分類（1BT, 2BT, 2StepET）===
+        For k = 0 To 2
+            mthX = outputMethodList(k)
+            keyX = yearX & "_" & monX & "_" & gClinicCode & "_" & mthX
+            cntX = 0: eggX = 0
+            If ET_Count.Exists(keyX) Then
+                eggX = ET_Count(keyX)
+                If Not IsError(Application.Match(mthX, correctHalfList, 0)) Then
+                    cntX = eggX / 2
+                Else
+                    cntX = eggX
+                End If
+            End If
+            If cntX <> 0 Then wsSummary.Cells(rowBase, colBase + k * 2 + 2).value = RoundHalfUp(cntX)
+            If eggX <> 0 Then wsSummary.Cells(rowBase + 1, colBase + k * 2 + 2).value = eggX
+
+            outKeyX = keyX
+            globalET_Count(outKeyX) = cntX
+            globalEgg_Count(outKeyX) = eggX
+            all_cnt = all_cnt + cntX
+            all_egg = all_egg + eggX
+        Next k
+
+        ' === 分割胚（Cleavage）===
+        Dim e1, e2, c1, c2
+        c1 = 0: c2 = 0: e1 = 0: e2 = 0
+        If ET_Count.Exists(yearX & "_" & monX & "_" & gClinicCode & "_1分割胚") Then
+            e1 = ET_Count(yearX & "_" & monX & "_" & gClinicCode & "_1分割胚"): c1 = e1
+            globalET_Count(yearX & "_" & monX & "_" & gClinicCode & "_1分割胚") = c1
+        End If
+        If ET_Count.Exists(yearX & "_" & monX & "_" & gClinicCode & "_2分割胚") Then
+            e2 = ET_Count(yearX & "_" & monX & "_" & gClinicCode & "_2分割胚"): c2 = e2 / 2
+            globalET_Count(yearX & "_" & monX & "_" & gClinicCode & "_2分割胚") = c2
+        End If
+        If c1 + c2 <> 0 Then wsSummary.Cells(rowBase, colBase + 8).value = RoundHalfUp(c1 + c2)
+        If e1 + e2 <> 0 Then wsSummary.Cells(rowBase + 1, colBase + 8).value = e1 + e2
+        globalET_Count(yearX & "_" & monX & "_" & gClinicCode & "_Cleavage") = c1 + c2
+        globalEgg_Count(yearX & "_" & monX & "_" & gClinicCode & "_Cleavage") = e1 + e2
+        all_cnt = all_cnt + c1 + c2
+        all_egg = all_egg + e1 + e2
+
+        ' === 想定外 ===
+        Dim u1, u2, u3, uc, ur
+        u1 = 0: u2 = 0: u3 = 0
+        If ET_Count.Exists(yearX & "_" & monX & "_" & gClinicCode & "_1想定外STAGE") Then u1 = ET_Count(yearX & "_" & monX & "_" & gClinicCode & "_1想定外STAGE")
+        globalET_Count(yearX & "_" & monX & "_" & gClinicCode & "_1想定外STAGE") = u1
+        If ET_Count.Exists(yearX & "_" & monX & "_" & gClinicCode & "_2想定外STAGE") Then u2 = ET_Count(yearX & "_" & monX & "_" & gClinicCode & "_2想定外STAGE")
+        globalET_Count(yearX & "_" & monX & "_" & gClinicCode & "_2想定外STAGE") = u2
+        If ET_Count.Exists(yearX & "_" & monX & "_" & gClinicCode & "_混在：1想定外 + 他") Then u3 = ET_Count(yearX & "_" & monX & "_" & gClinicCode & "_混在：1想定外 + 他")
+        globalET_Count(yearX & "_" & monX & "_" & gClinicCode & "_混在：1想定外 + 他") = u3
+        uc = u1 + u2 / 2 + u3 / 2
+        ur = u1 + u2 + u3
+        If uc <> 0 Then wsSummary.Cells(rowBase, colBase + 10).value = RoundHalfUp(uc)
+        If ur <> 0 Then wsSummary.Cells(rowBase + 1, colBase + 10).value = ur
+        globalET_Count(yearX & "_" & monX & "_" & gClinicCode & "_想定外") = uc
+        globalEgg_Count(yearX & "_" & monX & "_" & gClinicCode & "_想定外") = ur
+        all_cnt = all_cnt + uc
+        all_egg = all_egg + ur
+
+        ' === All ===
+        If all_cnt <> 0 Then wsSummary.Cells(rowBase, colBase).value = RoundHalfUp(all_cnt)
+        If all_egg <> 0 Then wsSummary.Cells(rowBase + 1, colBase).value = all_egg
+        globalET_Count(yearX & "_" & monX & "_" & gClinicCode & "_All") = all_cnt
+        globalEgg_Count(yearX & "_" & monX & "_" & gClinicCode & "_All") = all_egg
+    Next iMonth
+
+End Sub
+Function SortDictionaryKeys(dict As Object) As Collection
+    Dim keys() As Variant
+    Dim i As Long
+
+    ' 空の場合は空のCollectionを返す
+    If dict.count = 0 Then
+        Set SortDictionaryKeys = New Collection
+        Exit Function
+    End If
+
+    ' キー配列に格納
+    ReDim keys(0 To dict.count - 1)
+    i = 0
+    Dim key
+    For Each key In dict.keys
+        keys(i) = key
+        i = i + 1
+    Next
+
+    ' キー配列を昇順に並べ替え
+    Call QuickSort(keys, LBound(keys), UBound(keys))
+
+    ' ソート済みのキーをCollectionに格納して返す
+    Dim col As New Collection
+    For i = 0 To UBound(keys)
+        col.Add keys(i)
+    Next
+    Set SortDictionaryKeys = col
+End Function
+
+' 配列 keys() を昇順で並べ替えるためのクイックソート関数
+Sub QuickSort(arr() As Variant, ByVal first As Long, ByVal last As Long)
+    Dim low As Long, high As Long
+    Dim midValue As Variant
+    Dim temp As Variant
+
+    low = first
+    high = last
+    midValue = arr((first + last) \ 2) ' 中央値を基準にする
+
+    Do While low <= high
+        ' midValue より小さい値を探す
+        Do While arr(low) < midValue
+            low = low + 1
+        Loop
+
+        ' midValue より大きい値を探す
+        Do While arr(high) > midValue
+            high = high - 1
+        Loop
+
+        ' 値の交換
+        If low <= high Then
+            temp = arr(low)
+            arr(low) = arr(high)
+            arr(high) = temp
+            low = low + 1
+            high = high - 1
+        End If
+    Loop
+
+    ' 再帰的にソート
+    If first < high Then QuickSort arr, first, high
+    If low < last Then QuickSort arr, low, last
+End Sub
+
+Sub ET_ClinicStats_03_EtAgeWoman()
+
+'    Call SetGlobalVars
+'    Call ET_ClinicStats_02_ETcount ' 件数ディクショナリを先に集計
+
+    Dim wsPivot As Worksheet, wsReport As Worksheet
+    Dim pt As pivotTable
+    Dim r As Long, c As Long
+    Dim currentYear As String, currentClinic As String, method As String
+    Dim yearCol As Long, firstDataRow As Long, lastRow As Long, lastCol As Long
+    Dim monthStr As String, monthNum As Long, i As Long
+    Dim clinicID As String
+    Dim ageVal As Variant, countVal As Variant
+    Dim methodKey As String
+    Dim ageSum As Double, totalCount As Double
+    Dim cleavageSum As Double ' 分割胚の年齢×回数の合計
+    Dim cleavageCount As Double ' 分割胚の件数（ET02から取得）
+    Dim rowOffset As Long, colOffset As Long
+    Dim methodColDict As Object: Set methodColDict = CreateObject("Scripting.Dictionary")
+    Dim clinicRow As Long, methodRow As Long
+
+    ' ==== シート・変数設定 ====
+    Set wsPivot = ThisWorkbook.Sheets("S17_移植時の妻年齢")
+    Set pt = wsPivot.PivotTables("P17_移植時の妻年齢")
+    Set wsReport = ThisWorkbook.Sheets("移植_月別レポート")
+
+    yearCol = pt.RowRange.Column
+    clinicRow = pt.RowRange.row - 1
+    methodRow = clinicRow + 1
+    firstDataRow = clinicRow + 1
+    lastRow = pt.TableRange2.row + pt.TableRange2.Rows.count - 1
+    lastCol = pt.TableRange2.Column + pt.TableRange2.Columns.count - 1
+
+    clinicID = Trim(gClinicID)
+
+    ' ==== 出力列オフセットの設定（B列基準）====
+    methodColDict.Add "1BT", 3
+    methodColDict.Add "2BT", 5
+    methodColDict.Add "2StepET", 7
+    methodColDict.Add "Cleavage", 9
+    methodColDict.Add "Other", 11
+    methodColDict.Add "All", 1
+
+    ' ==== 各月処理 ====
+    For r = firstDataRow To lastRow
+        monthStr = Trim(wsPivot.Cells(r, yearCol).value)
+
+        If IsNumeric(monthStr) And Len(monthStr) = 4 Then
+            currentYear = monthStr ' 年度更新
+        ElseIf currentYear = gYear Then
+            On Error Resume Next
+            monthNum = CLng(Replace(monthStr, " 月", ""))
+            On Error GoTo 0
+
+            If monthNum >= 1 And monthNum <= 12 Then
+                i = monthNum - 1
+                rowOffset = 6 + 17 * (i \ 3)
+                colOffset = 2 + 15 * (i Mod 3)
+
+                ageSum = 0
+                totalCount = 0
+                cleavageSum = 0
+
+                ' Cleavage件数はglobalET_Countから取得（1回でOK）
+                methodKey = gYear & "_" & Format(monthNum, "00") & "_" & clinicID & "_Cleavage"
+                If globalET_Count.Exists(methodKey) Then
+                    cleavageCount = globalET_Count(methodKey)
+                Else
+                    cleavageCount = 0
+                End If
+
+                ' ==== 各列（院 × 方法）を処理 ====
+                For c = yearCol + 1 To lastCol
+                    If wsPivot.Cells(clinicRow, c).value <> "" Then
+                        currentClinic = Format(wsPivot.Cells(clinicRow, c).value, "00")
+                    End If
+
+                    method = Trim(wsPivot.Cells(methodRow, c).value)
+
+                    If currentClinic = clinicID Then
+                        ageVal = wsPivot.Cells(r, c).value
+
+                        ' === 既知の方法（1BT等） ===
+If methodColDict.Exists(method) And (method = "1BT" Or method = "2BT" Or method = "2StepET") Then
+
+    ' 値をそのまま出力（ピボットの値が平均）
+    If IsNumeric(ageVal) And ageVal <> 0 Then
+        wsReport.Cells(rowOffset + 2, colOffset + methodColDict(method)).value = ageVal
+        wsReport.Cells(rowOffset + 2, colOffset + methodColDict(method)).NumberFormat = "0.0"
+    End If
+
+    ' ※ Allの平均計算には含める（件数と積算値を加算）
+    methodKey = gYear & "_" & Format(monthNum, "00") & "_" & clinicID & "_" & method
+    If globalET_Count.Exists(methodKey) Then
+        countVal = globalET_Count(methodKey)
+    Else
+        countVal = 0
+    End If
+
+    If IsNumeric(ageVal) And countVal > 0 Then
+        ageSum = ageSum + ageVal * countVal
+        totalCount = totalCount + countVal
+    End If
+
+
+                        ' === その他分類 ===
+                        Else
+                        If method <> "1分割胚" And method <> "2分割胚" Then
+                            methodKey = gYear & "_" & Format(monthNum, "00") & "_" & clinicID & "_" & method
+                            If globalET_Count.Exists(methodKey) Then
+                                countVal = globalET_Count(methodKey)
+                            Else
+                                countVal = 0
+                            End If
+
+                            If IsNumeric(ageVal) And countVal > 0 And ageVal <> 0 Then
+                                wsReport.Cells(rowOffset + 2, colOffset + methodColDict("Other")).value = ageVal
+                                wsReport.Cells(rowOffset + 2, colOffset + methodColDict("Other")).NumberFormat = "0.0"
+                                ageSum = ageSum + ageVal * countVal
+                                totalCount = totalCount + countVal
+                            End If
+                        End If
+                        End If
+                        End If
+                Next c
+
+                ' === Cleavage（分割胚）出力 ===
+
+                ' 分割胚の平均年齢を「1分割胚＋2分割胚」の件数加重平均で計算
+                Dim avg1 As Double, avg2 As Double
+                Dim c1 As Long, c2 As Long
+                Dim cleavageAvg As Double
+                Dim key1 As String, key2 As String
+                key1 = gYear & "_" & Format(monthNum, "00") & "_" & clinicID & "_1分割胚"
+                key2 = gYear & "_" & Format(monthNum, "00") & "_" & clinicID & "_2分割胚"
+
+                ' 件数（ET件数）を取得
+                If globalET_Count.Exists(key1) Then c1 = globalET_Count(key1) Else c1 = 0
+                If globalET_Count.Exists(key2) Then c2 = globalET_Count(key2) Else c2 = 0
+
+                ' 平均年齢（ピボットから）を取得
+                avg1 = 0: avg2 = 0
+                For c = yearCol + 1 To lastCol
+                    If wsPivot.Cells(clinicRow, c).value <> "" Then
+                        currentClinic = Format(wsPivot.Cells(clinicRow, c).value, "00")
+                    End If
+                    method = Trim(wsPivot.Cells(methodRow, c).value)
+
+                    If currentClinic = clinicID And r <= lastRow Then
+                        Select Case method
+                            Case "1分割胚"
+                                If IsNumeric(wsPivot.Cells(r, c).value) Then avg1 = wsPivot.Cells(r, c).value
+                            Case "2分割胚"
+                                If IsNumeric(wsPivot.Cells(r, c).value) Then avg2 = wsPivot.Cells(r, c).value
+                        End Select
+                    End If
+                Next c
+
+                ' 件数加重平均（ET件数ベース）を計算
+                If (c1 + c2) > 0 Then
+                    cleavageAvg = (avg1 * c1 + avg2 * c2) / (c1 + c2)
+                Else
+                    cleavageAvg = 0
+                End If
+
+                ' 出力
+                If cleavageAvg <> 0 Then
+                wsReport.Cells(rowOffset + 2, colOffset + methodColDict("Cleavage")).value = cleavageAvg
+                wsReport.Cells(rowOffset + 2, colOffset + methodColDict("Cleavage")).NumberFormat = "0.0"
+                End If
+
+                ' 全体平均（All）に加算
+                ageSum = ageSum + (avg1 * c1 + avg2 * c2)
+                totalCount = totalCount + (c1 + c2)
+
+
+                ' === All（全体平均）出力 ===
+If totalCount > 0 Then
+    Dim allAvg As Double
+    allAvg = ageSum / totalCount
+
+    If allAvg <> 0 Then
+        wsReport.Cells(rowOffset + 2, colOffset + methodColDict("All")).value = allAvg
+        wsReport.Cells(rowOffset + 2, colOffset + methodColDict("All")).NumberFormat = "0.0"
+    End If
+End If
+            End If
+        End If
+    Next r
+
+'    MsgBox "平均女性年齢（ET時）の出力が完了しました！", vbInformation
+
+End Sub
+
+Sub ET_ClinicStats_04_AgeWifeHusband()
+
+
+    Dim wsReport As Worksheet: Set wsReport = ThisWorkbook.Sheets("移植_月別レポート")
+    Dim clinicID As String: clinicID = Trim(gClinicID)
+
+    ' === 対象2名（妻 / 夫）の設定 ===
+    Dim personSheet(1 To 2) As String, personPivot(1 To 2) As String
+    Dim rowOffsetAdd(1 To 2) As Long
+    personSheet(1) = "S18_ET_採卵時の妻年齢": personPivot(1) = "P18_ET_採卵時の妻年齢": rowOffsetAdd(1) = 3
+    personSheet(2) = "S19_ET_採卵時の夫年齢": personPivot(2) = "P19_ET_採卵時の夫年齢": rowOffsetAdd(2) = 4
+
+    ' === 分類と列オフセット（ETと同様） ===
+    Dim methodColDict As Object: Set methodColDict = CreateObject("Scripting.Dictionary")
+    methodColDict.Add "1BT", 3
+    methodColDict.Add "2BT", 5
+    methodColDict.Add "2StepET", 7
+    methodColDict.Add "Cleavage", 9
+    methodColDict.Add "Other", 11
+    methodColDict.Add "All", 1
+
+    Dim iPerson As Long
+    For iPerson = 1 To 2
+
+        Dim wsPivot As Worksheet: Set wsPivot = ThisWorkbook.Sheets(personSheet(iPerson))
+        Dim pt As pivotTable: Set pt = wsPivot.PivotTables(personPivot(iPerson))
+
+        Dim yearCol As Long, clinicRow As Long, methodRow As Long
+        Dim firstDataRow As Long, lastRow As Long, lastCol As Long
+        Dim r As Long, c As Long
+        Dim monthStr As String, monthNum As Long, i As Long
+        Dim currentYear As String
+        Dim currentClinic As String, method As String, methodKey As String
+        Dim ageVal As Variant, countVal As Variant
+        Dim rowOffset As Long, colOffset As Long
+        Dim ageSum As Double, totalCount As Double
+
+        ' === ピボット位置情報取得 ===
+        yearCol = pt.RowRange.Column
+        clinicRow = pt.RowRange.row - 1
+        methodRow = clinicRow + 1
+        firstDataRow = clinicRow + 2
+        lastRow = pt.TableRange2.row + pt.TableRange2.Rows.count - 1
+        lastCol = pt.TableRange2.Column + pt.TableRange2.Columns.count - 1
+
+        ' === 月ループ ===
+        For r = firstDataRow To lastRow
+            monthStr = Trim(wsPivot.Cells(r, yearCol).value)
+
+            If IsNumeric(monthStr) And Len(monthStr) = 4 Then
+                currentYear = monthStr
+            ElseIf currentYear = gYear Then
+                On Error Resume Next
+                monthNum = CLng(Replace(monthStr, " 月", ""))
+                On Error GoTo 0
+
+                If monthNum >= 1 And monthNum <= 12 Then
+                    i = monthNum - 1
+                    rowOffset = 6 + 17 * (i \ 3)
+                    colOffset = 2 + 15 * (i Mod 3)
+
+                    ageSum = 0
+                    totalCount = 0
+
+                    ' === 各列（クリニック×方法） ===
+                    For c = yearCol + 1 To lastCol
+                        If wsPivot.Cells(clinicRow, c).value <> "" Then
+                            currentClinic = Format(wsPivot.Cells(clinicRow, c).value, "00")
+                        End If
+
+                        method = Trim(wsPivot.Cells(methodRow, c).value)
+
+                        If currentClinic = clinicID Then
+                            ageVal = wsPivot.Cells(r, c).value
+
+                            methodKey = gYear & "_" & Format(monthNum, "00") & "_" & clinicID & "_" & method
+                            If globalET_Count.Exists(methodKey) Then
+                                countVal = globalET_Count(methodKey)
+                            Else
+                                countVal = 0
+                            End If
+
+                            If IsNumeric(ageVal) And countVal > 0 And ageVal <> 0 Then
+                                ' === 既知の分類（1BTなど）===
+                                If methodColDict.Exists(method) And (method = "1BT" Or method = "2BT" Or method = "2StepET") Then
+                                    wsReport.Cells(rowOffset + rowOffsetAdd(iPerson), colOffset + methodColDict(method)).value = ageVal
+                                    wsReport.Cells(rowOffset + rowOffsetAdd(iPerson), colOffset + methodColDict(method)).NumberFormat = "0.0"
+                                    ageSum = ageSum + ageVal * countVal
+                                    totalCount = totalCount + countVal
+
+                                ' === Cleavageは個別で集計済みなので除外 ===
+                                ElseIf method <> "1分割胚" And method <> "2分割胚" Then
+                                    ' その他分類
+                                    wsReport.Cells(rowOffset + rowOffsetAdd(iPerson), colOffset + methodColDict("Other")).value = ageVal
+                                    wsReport.Cells(rowOffset + rowOffsetAdd(iPerson), colOffset + methodColDict("Other")).NumberFormat = "0.0"
+                                    ageSum = ageSum + ageVal * countVal
+                                    totalCount = totalCount + countVal
+                                End If
+                            End If
+                        End If
+                    Next c
+
+                    ' === Cleavage（分割胚）：1分割＋2分割 の件数加重平均 ===
+                    Dim key1 As String, key2 As String
+                    Dim c1 As Long, c2 As Long
+                    Dim avg1 As Double, avg2 As Double, cleavageAvg As Double
+
+                    key1 = gYear & "_" & Format(monthNum, "00") & "_" & clinicID & "_1分割胚"
+                    key2 = gYear & "_" & Format(monthNum, "00") & "_" & clinicID & "_2分割胚"
+                    c1 = 0: c2 = 0: avg1 = 0: avg2 = 0
+
+                    If globalET_Count.Exists(key1) Then c1 = globalET_Count(key1)
+                    If globalET_Count.Exists(key2) Then c2 = globalET_Count(key2)
+
+                    For c = yearCol + 1 To lastCol
+                        If wsPivot.Cells(clinicRow, c).value <> "" Then
+                            currentClinic = Format(wsPivot.Cells(clinicRow, c).value, "00")
+                        End If
+                        method = Trim(wsPivot.Cells(methodRow, c).value)
+
+                        If currentClinic = clinicID And r <= lastRow Then
+                            Select Case method
+                                Case "1分割胚"
+                                    If IsNumeric(wsPivot.Cells(r, c).value) Then avg1 = wsPivot.Cells(r, c).value
+                                Case "2分割胚"
+                                    If IsNumeric(wsPivot.Cells(r, c).value) Then avg2 = wsPivot.Cells(r, c).value
+                            End Select
+                        End If
+                    Next c
+
+                    If (c1 + c2) > 0 Then
+                        cleavageAvg = (avg1 * c1 + avg2 * c2) / (c1 + c2)
+                        If cleavageAvg <> 0 Then
+                            wsReport.Cells(rowOffset + rowOffsetAdd(iPerson), colOffset + methodColDict("Cleavage")).value = cleavageAvg
+                            wsReport.Cells(rowOffset + rowOffsetAdd(iPerson), colOffset + methodColDict("Cleavage")).NumberFormat = "0.0"
+                        End If
+                        ageSum = ageSum + (avg1 * c1 + avg2 * c2)
+                        totalCount = totalCount + (c1 + c2)
+                    End If
+
+                    ' === All（全体平均） ===
+                    If totalCount > 0 Then
+                        Dim avgAll As Double: avgAll = ageSum / totalCount
+                        If avgAll <> 0 Then
+                            wsReport.Cells(rowOffset + rowOffsetAdd(iPerson), colOffset + methodColDict("All")).value = avgAll
+                            wsReport.Cells(rowOffset + rowOffsetAdd(iPerson), colOffset + methodColDict("All")).NumberFormat = "0.0"
+                        End If
+                    End If
+                End If
+            End If
+        Next r
+    Next iPerson
+
+End Sub
+Sub ET_ClinicStats_05_GardnerByCategory()
+
+'    Call SetGlobalVars
+'    Call ET_ClinicStats_01_CreateReportSheet
+'    Call ET_ClinicStats_02_ETcount ' 件数ディクショナリを先に集計
+
+    Dim ws As Worksheet: Set ws = Sheets("S20_移植時前ガードナー")
+    Dim pt As pivotTable: Set pt = ws.PivotTables("P20_移植時前ガードナー")
+    Dim wsOut As Worksheet: Set wsOut = Sheets("移植_月別レポート")
+
+    Dim clinicRow As Long: clinicRow = pt.RowRange.row - 3
+    Dim categoryRow As Long: categoryRow = pt.RowRange.row - 2
+    Dim evalRow As Long: evalRow = pt.RowRange.row
+    Dim yearCol As Long: yearCol = pt.TableRange2.Column
+    Dim lastCol As Long: lastCol = pt.TableRange2.Column + pt.TableRange2.Columns.count - 1
+
+    ' 評価件数を格納する辞書
+    Dim gardnerDict As Object: Set gardnerDict = CreateObject("Scripting.Dictionary")
+
+    Dim r As Long, c As Long
+    Dim currentYear As String, currentMonth As String
+    Dim headerClinic As String, headerCategory As String, headerEval As String
+    Dim val, key, ym As String
+
+    ' 年月行のループ
+    For r = 1 To pt.RowRange.Rows.count
+        Dim labelVal As String: labelVal = pt.RowRange.Cells(r, 1).value
+
+        If IsNumeric(labelVal) And Len(labelVal) = 4 Then
+            currentYear = labelVal
+            currentMonth = "" ' 年が変わったら月をリセット
+        ElseIf labelVal Like "*月" Then
+            currentMonth = Replace(labelVal, "月", "")
+        End If
+
+        If currentYear = gYear And currentMonth <> "" Then
+            For c = yearCol + 1 To lastCol
+
+                ' === 親の空欄補完処理 ===
+                If ws.Cells(clinicRow, c).value <> "" Then
+    headerClinic = Format(ws.Cells(clinicRow, c).value, "00") ' ?修正後
+End If
+                If ws.Cells(categoryRow, c).value <> "" Then
+                    headerCategory = CStr(ws.Cells(categoryRow, c).value)
+                End If
+                If ws.Cells(evalRow, c).value <> "" Then
+                    headerEval = CStr(ws.Cells(evalRow, c).value)
+                End If
+
+
+                If headerClinic = CStr(gClinicID) And headerCategory <> "" Then
+                    val = ws.Cells(pt.RowRange.row + r - 1, c).value
+                                        
+                    If IsNumeric(val) Then
+                        Dim gType As Variant
+                        Select Case headerEval
+                            Case "AA", "AB", "BA": gType = "AAABBA"
+                            Case "BB": gType = "BB"
+                            Case "CC": gType = "CC"
+                            Case Else
+                                If InStr(headerEval, "C") > 0 Then
+                                    gType = "C含む"
+                                Else
+                                    gType = "" ' 評価なし → 無視
+                                End If
+                        End Select
+
+                        If gType <> "" Then
+                            ym = currentYear & "_" & Format(currentMonth, "00")
+                            key = ym & "_" & headerCategory & "_" & gType
+                            
+'                                Debug.Print "YM=" & ym, _
+'                "Clinic=" & headerClinic, _
+'                "Category=[" & headerCategory & "]", _
+'                "Eval=[" & headerEval & "]", _
+'                "gType=" & gType, _
+'                "val=", val   ' ← ここに追加！
+                            
+                            
+                            If gardnerDict.Exists(key) Then
+                                gardnerDict(key) = gardnerDict(key) + val
+                            Else
+                                gardnerDict.Add key, val
+                            End If
+                        End If
+                        
+                        ' === ここでgTypeが存在しない他の種類もゼロ埋め ===
+If headerClinic = CStr(gClinicID) And headerCategory <> "" Then
+    ym = currentYear & "_" & Format(currentMonth, "00")
+    For Each gFillType In Array("AAABBA", "BB", "C含む", "CC")
+        key = ym & "_" & headerCategory & "_" & gFillType
+        If Not gardnerDict.Exists(key) Then
+            gardnerDict.Add key, 0
+        End If
+    Next gFillType
+End If
+                        
+                    End If
+                End If
+            Next c
+        End If
+    Next r
+
+' === 出力処理 ===
+Dim outDict As Object: Set outDict = CreateObject("Scripting.Dictionary")
+Dim k, parts, yearX, monX, rawCat, methodX, allKey
+Dim knownKeys As Object: Set knownKeys = CreateObject("Scripting.Dictionary")
+
+' まずgardnerDictの内容を出力
+For Each k In gardnerDict.keys
+    parts = Split(k, "_")
+    yearX = parts(0): monX = parts(1): rawCat = parts(2): gType = parts(3)
+
+    Select Case rawCat
+        Case "1BT": methodX = "SBT"
+        Case "2BT": methodX = "DBT"
+        Case "2StepET": methodX = "2StepET"
+        Case "1分割胚", "2分割胚": methodX = "Cleavage"
+        Case "1想定外STAGE", "2想定外STAGE", "混在：1想定外 + 他": methodX = "想定外"
+        Case Else: methodX = ""
+    End Select
+    If methodX = "" Then GoTo SkipK
+
+    ' 出力 + All 集約
+    Call WriteGardnerResult(wsOut, CStr(yearX), CStr(monX), CStr(rawCat), CStr(methodX), CStr(gType), gardnerDict(k))
+
+    allKey = yearX & "_" & monX & "_All_" & gType
+    If outDict.Exists(allKey) Then
+        outDict(allKey) = outDict(allKey) + gardnerDict(k)
+    Else
+        outDict.Add allKey, gardnerDict(k)
+    End If
+
+    ' 出力済キー記録
+    knownKeys.Add yearX & "_" & monX & "_" & rawCat & "_" & gType, True
+
+SkipK:
+Next k
+
+' === globalEgg_Countから抜け漏れ分をゼロ出力 ===
+Dim ek As Variant
+For Each ek In globalEgg_Count.keys
+    parts = Split(ek, "_")
+    If UBound(parts) < 3 Then GoTo NextEK
+    yearX = parts(0): monX = parts(1): rawCat = parts(2)
+
+    ' 分類に変換
+    Select Case rawCat
+        Case "1BT": methodX = "SBT"
+        Case "2BT": methodX = "DBT"
+        Case "2StepET": methodX = "2StepET"
+        Case "1分割胚", "2分割胚": methodX = "Cleavage"
+        Case "1想定外STAGE", "2想定外STAGE", "混在：1想定外 + 他": methodX = "想定外"
+        Case Else: methodX = ""
+    End Select
+    If methodX = "" Then GoTo NextEK
+
+    ' 4種類のgTypeを強制出力（AAABBA, BB, C含む, CC）
+    For Each gType In Array("AAABBA", "BB", "C含む", "CC")
+        If Not knownKeys.Exists(yearX & "_" & monX & "_" & rawCat & "_" & gType) Then
+            Call WriteGardnerResult(wsOut, CStr(yearX), CStr(monX), CStr(rawCat), CStr(methodX), CStr(gType), 0)
+        End If
+    Next gType
+NextEK:
+Next ek
+
+' === All分類出力 ===
+For Each k In outDict.keys
+    parts = Split(k, "_")
+    Call WriteGardnerResult(wsOut, CStr(parts(0)), CStr(parts(1)), "All", "All", CStr(parts(3)), outDict(k))
+Next k
+
+    
+    'デバック用sub
+'Call DebugGardnerDict(gardnerDict)
+
+End Sub
+
+Private Sub WriteGardnerResult(ws As Worksheet, yearX As String, monX As String, rawCat As String, methodX As String, gType As String, countVal As Long)
+'ET05のサブルーチン
+    ' === 出力位置を計算 ===
+    Dim rowBase As Long: rowBase = 6 + 17 * ((CLng(monX) - 1) \ 3)
+    Dim colBase As Long: colBase = 3 + 15 * ((CLng(monX) - 1) Mod 3)
+
+    ' === 出力行のオフセット（ガードナー評価）===
+    Dim rowOffset As Long
+    Select Case gType
+        Case "AAABBA": rowOffset = 7
+        Case "BB": rowOffset = 8
+        Case "C含む": rowOffset = 9
+        Case "CC": rowOffset = 10
+        Case Else: Exit Sub ' 無効なgTypeは出力しない
+    End Select
+
+    ' === 出力列のオフセット（移植分類）===
+    Dim colOffset As Long
+    Select Case methodX
+        Case "All": colOffset = 0
+        Case "SBT": colOffset = 2
+        Case "DBT": colOffset = 4
+        Case "2StepET": colOffset = 6
+        Case "Cleavage": colOffset = 8
+        Case "想定外": colOffset = 10
+        Case Else: Exit Sub ' 無効な分類
+    End Select
+
+    ' === 卵数辞書からキーを取得 ===
+    Dim outKey As String
+    If methodX = "想定外" Or methodX = "Cleavage" Then
+        outKey = yearX & "_" & monX & "_" & gClinicID & "_" & methodX
+    Else
+        outKey = yearX & "_" & monX & "_" & gClinicID & "_" & rawCat
+    End If
+
+    ' === globalEgg_Countにキーが存在しない場合はスキップ ===
+'    If Not globalEgg_Count.exists(outKey) Then Exit Sub
+
+    ' 卵数取得（0は許容）
+    Dim totalEgg As Long: totalEgg = globalEgg_Count(outKey)
+
+    ' === 割合出力（左列）===
+    With ws.Cells(rowBase + rowOffset, colBase + colOffset)
+        If totalEgg > 0 Then
+            .NumberFormatLocal = "0.0%"
+            .value = countVal / totalEgg
+        Else
+'            .value = "" ' 卵数0なら空白
+        End If
+    End With
+
+    ' === 内訳出力（右列）===
+    With ws.Cells(rowBase + rowOffset, colBase + colOffset + 1)
+        .NumberFormatLocal = "@"
+        If totalEgg > 0 Then
+            .value = countVal & "/" & totalEgg
+        Else
+            .value = "" ' 卵数0なら空白
+        End If
+        .Font.Size = 9
+        .HorizontalAlignment = xlLeft
+    End With
+
+End Sub
+
+Sub ET_ClinicStats_06_Output_hCG_MonthlyRates()
+
+'    Call SetGlobalVars
+'    Call ET_ClinicStats_01_CreateReportSheet
+'    Call ET_ClinicStats_02_ETcount
+
+    ' === シート・ピボット設定 ===
+    Dim wsDen As Worksheet, wsNum As Worksheet, wsOut As Worksheet
+    Set wsDen = ThisWorkbook.Sheets("S08_母数_科学的妊娠判定")  ' 分母
+    Set wsNum = ThisWorkbook.Sheets("S09_科学的妊娠判定")      ' 分子
+    Set wsOut = ThisWorkbook.Sheets("移植_月別レポート")        ' 出力先
+
+    Dim ptDen As pivotTable, ptNum As pivotTable
+    Set ptDen = wsDen.PivotTables("P08_母数_科学的妊娠判定")
+    Set ptNum = wsNum.PivotTables("P09_科学的妊娠判定")
+
+    ' === グローバル変数の取得（SetGlobalVarsで事前に設定されている前提）===
+    Dim targetYear As String: targetYear = CStr(gYear)
+    Dim targetClinic As String: targetClinic = gClinicID
+
+    ' === 分母・分子の辞書に件数を格納 ===
+    Dim denDict As Object, numDict As Object
+    Set denDict = CreateObject("Scripting.Dictionary")
+    Set numDict = CreateObject("Scripting.Dictionary")
+
+    ' 分母：月別に格納
+    Call LoadCountsFromPivot(ptDen, denDict, targetYear, targetClinic, isNumerator:=False)
+    ' 分子：月別に格納
+    Call LoadCountsFromPivot(ptNum, numDict, targetYear, targetClinic, isNumerator:=True)
+
+    ' === 出力処理 ===
+     Dim methodList As Variant
+    methodList = Array("All", "SBT", "DBT", "2StepET", "Cleavage", "想定外")
+
+    For m = 1 To 12
+        Dim monX As String: monX = CStr(m)
+
+        ' === ブロックの基準位置 ===
+        Dim rowBase As Long: rowBase = 6 + 17 * ((m - 1) \ 3)
+        Dim colBase As Long: colBase = 3 + 15 * ((m - 1) Mod 3)
+
+        ' === hCG陽性率の出力行 ===
+        Dim r As Long: r = rowBase + 11
+
+        Dim methodX As Variant
+        For Each methodX In methodList
+
+            ' === 出力列のオフセット ===
+            Dim colOffset As Long
+            Select Case methodX
+                Case "All": colOffset = 0
+                Case "SBT": colOffset = 2
+                Case "DBT": colOffset = 4
+                Case "2StepET": colOffset = 6
+                Case "Cleavage": colOffset = 8
+                Case "想定外": colOffset = 10
+                Case Else: GoTo SkipMethod
+            End Select
+
+            ' === キーの決定 ===
+            Dim key As String
+            Dim n As Long, d As Long
+
+'            If methodX = "All" Then
+'                Dim totalN As Long: totalN = 0
+'                Dim totalD As Long: totalD = 0
+'                Dim k As Variant
+'                For Each k In Array("SBT", "DBT", "2StepET", "Cleavage", "想定外")
+'                    Dim keyX As String: keyX = "hCG_" & monX & " 月_" & k
+'                    If NumDict.exists(keyX) Then totalN = totalN + NumDict(keyX)
+'                    If DenDict.exists(keyX) Then totalD = totalD + DenDict(keyX)
+'                Next k
+'                n = totalN
+'                d = totalD
+'            Else
+'                key = "hCG_" & monX & " 月_" & methodX
+'                If NumDict.exists(key) Then n = NumDict(key) Else n = 0
+'                If DenDict.exists(key) Then d = DenDict(key) Else d = 0
+'            End If
+
+If methodX = "All" Then
+    Dim totalN As Long: totalN = 0
+    Dim totalD As Long: totalD = 0
+    Dim k As Variant
+    For Each k In Array("SBT", "DBT", "2StepET", "Cleavage", "想定外")
+        Dim keyX As String: keyX = "hCG_" & monX & " 月_" & k
+        If numDict.Exists(keyX) Then totalN = totalN + numDict(keyX)
+        If denDict.Exists(keyX) Then totalD = totalD + denDict(keyX)
+    Next k
+    n = totalN
+    d = totalD
+Else
+    key = "hCG_" & monX & " 月_" & methodX
+' 分子キーがなければ0で追加（出力保証）
+If Not numDict.Exists(key) Then numDict.Add key, 0
+If Not denDict.Exists(key) Then
+    d = 0
+Else
+    d = RoundHalfUp(denDict(key))
+End If
+
+n = RoundHalfUp(numDict(key))
+
+End If
+
+            ' === 割合出力 ===
+            With wsOut.Cells(r, colBase + colOffset)
+                If d > 0 Then
+                    .NumberFormatLocal = "0.0%"
+                    .value = n / d
+                Else
+'                    .value = ""
+                End If
+            End With
+
+            ' === 内訳出力 ===
+            With wsOut.Cells(r, colBase + colOffset + 1)
+                .NumberFormatLocal = "@"
+                If d > 0 Then
+                    .value = n & "/" & d
+                Else
+'                    .value = ""
+                End If
+                .Font.Size = 9
+                .HorizontalAlignment = xlLeft
+            End With
+
+SkipMethod:
+        Next methodX
+    Next m
+
+        ' === デバッグ出力 ===
+    Debug.Print "【DenDict：分母】"
+    
+    For Each k In denDict.keys
+        Debug.Print k & " : " & denDict(k)
+    Next k
+
+    Debug.Print "【NumDict：分子】"
+    For Each k In numDict.keys
+        Debug.Print k & " : " & numDict(k)
+    Next k
+
+    
+End Sub
+
+Private Sub LoadCountsFromPivot(pt As pivotTable, ByRef outDict As Object, ByVal y As String, ByVal clinicID As String, ByVal isNumerator As Boolean)
+'ET06のサブ処理
+
+
+    Dim ws As Worksheet: Set ws = pt.Parent
+    Dim r As Long, rr As Long, c As Long
+    Dim yearCol As Long: yearCol = pt.TableRange2.Column
+    Dim rowStart As Long: rowStart = pt.RowRange.row + 1
+    Dim rowEnd As Long: rowEnd = pt.TableRange2.row + pt.TableRange2.Rows.count - 1
+    Dim colStart As Long: colStart = pt.TableRange2.Column
+    Dim colEnd As Long: colEnd = pt.TableRange2.Column + pt.TableRange2.Columns.count - 1
+    Dim prevRawCat As String: prevRawCat = ""  ' 直前の分類を保持
+
+    Dim value, yearVal, monthVal, clinicVal, rawCat As String
+    Dim key As String
+    Dim prevClinic As String
+
+    ' === 列ラベルの行数（階層）に応じて、クリニック・分類の行番号を決定 ===
+    Dim colLabelDepth As Long: colLabelDepth = pt.ColumnRange.Rows.count
+    Dim headerClinicRow As Long, headerCatRow As Long
+
+    Select Case colLabelDepth
+        Case 4
+            headerClinicRow = pt.RowRange.row - 1
+            headerCatRow = pt.RowRange.row - 2
+        Case 3
+            headerClinicRow = pt.RowRange.row
+            headerCatRow = pt.RowRange.row - 1
+        Case Else
+            MsgBox "列ラベル階層が想定外です。"
+            Exit Sub
+    End Select
+
+    ' === 列ループ：分類 × 院識別番号 ===
+    For c = colStart To colEnd
+
+     ' 分類の取得（列ラベルから）
+    If ws.Cells(headerCatRow, c).value <> "" Then
+        rawCat = Trim(ws.Cells(headerCatRow, c).value)
+        If rawCat = "総計" Then Exit For  ' ← ここで処理終了！
+        prevRawCat = rawCat  ' 値があれば更新
+    Else
+        rawCat = prevRawCat  ' 空なら前の分類を継続使用
+    End If
+
+        ' 分類名から methodX へ変換
+        Dim methodX As String
+        Select Case rawCat
+            Case "1BT": methodX = "SBT"
+            Case "2BT": methodX = "DBT"
+            Case "2StepET": methodX = "2StepET"
+            Case "1分割胚", "2分割胚": methodX = "Cleavage"
+            Case "1想定外STAGE", "2想定外STAGE", "混在：1想定外 + 他": methodX = "想定外"
+            Case Else: methodX = "その他"
+        End Select
+
+        ' 院識別番号の取得
+        If ws.Cells(headerClinicRow, c).value <> "" Then
+            prevClinic = Format(ws.Cells(headerClinicRow, c).value, "00")
+        End If
+        clinicVal = Format(prevClinic, "00")
+
+        ' gClinicID と一致しない列は無視
+        If clinicVal <> clinicID Then GoTo NextColumn
+
+        ' === 行ループ：各月・分類行に対して値を格納 ===
+        For rr = rowStart To rowEnd - 1
+            yearVal = ws.Cells(rr, yearCol).value
+
+            If IsNumeric(yearVal) Then
+                y = yearVal
+                monthVal = ""
+            Else
+                monthVal = yearVal  ' 例："1 月"
+
+                ' 年度一致のみ処理
+                If y = gYear Then
+'                    value = ws.Cells(rr, c).value
+'                    If IsNumeric(value) Then
+'                        key = "hCG_" & monthVal & "_" & methodX
+'                        If outDict.exists(key) Then
+'                            outDict(key) = outDict(key) + value
+'                        Else
+'                            outDict.Add key, value
+'                        End If
+'                    End If
+value = ws.Cells(rr, c).value
+If IsNumeric(value) Then
+    key = "hCG_" & monthVal & "_" & methodX
+
+' === 件数に補正（分子・分母どちらでも） ===
+Select Case rawCat
+    Case "2BT", "2StepET", "2分割胚", "2想定外STAGE", "混在：1想定外 + 他"
+        value = value / 2
+    Case Else
+        value = value ' そのまま
+End Select
+
+
+    ' === 値を辞書に追加 ===
+    If outDict.Exists(key) Then
+        outDict(key) = outDict(key) + value
+    Else
+        outDict.Add key, value
+    End If
+End If
+
+                End If
+            End If
+        Next rr
+
+NextColumn:
+    Next c
+    
+End Sub
+Sub ET_ClinicStats_07_Output_GS_MonthlyRates()
+
+'    Call SetGlobalVars
+'    Call ET_ClinicStats_01_CreateReportSheet
+'    Call ET_ClinicStats_02_ETcount
+'    Call ET_ClinicStats_06_Output_hCG_MonthlyRates
+
+    ' === シート・ピボット設定 ===
+    Dim wsDen As Worksheet, wsNum As Worksheet, wsOut As Worksheet
+    Set wsDen = ThisWorkbook.Sheets("S10_母数_GS")  ' 分母
+    Set wsNum = ThisWorkbook.Sheets("S11_GS")       ' 分子
+    Set wsOut = ThisWorkbook.Sheets("移植_月別レポート")  ' 出力先
+
+    Dim ptDen As pivotTable, ptNum As pivotTable
+    Set ptDen = wsDen.PivotTables("P10_母数_GS")
+    Set ptNum = wsNum.PivotTables("P11_GS")
+
+    ' === グローバル変数（年度・院識別）===
+    Dim targetYear As String: targetYear = CStr(gYear)
+    Dim targetClinic As String: targetClinic = gClinicID
+
+    ' === ピボットから辞書へ件数取得（卵数ベース）===
+    Dim denDict As Object, numDict As Object
+    Set denDict = CreateObject("Scripting.Dictionary")
+    Set numDict = CreateObject("Scripting.Dictionary")
+
+    Call LoadCountsFromPivot_Generic(ptDen, denDict, targetYear, targetClinic, "GS", False) ' 分母
+    Call LoadCountsFromPivot_Generic(ptNum, numDict, targetYear, targetClinic, "GS", True) ' 分子
+
+    ' === 出力処理 ===
+    Dim methodList As Variant
+    methodList = Array("All", "SBT", "DBT", "2StepET", "Cleavage", "想定外")
+
+    Dim m As Long
+    For m = 1 To 12
+        Dim monX As String: monX = CStr(m)
+        Dim rowBase As Long: rowBase = 6 + 17 * ((m - 1) \ 3)
+        Dim colBase As Long: colBase = 3 + 15 * ((m - 1) Mod 3)
+        Dim r As Long: r = rowBase + 12  ' 出力行はET06より1行下（+12）
+
+        Dim methodX As Variant
+        For Each methodX In methodList
+            Dim colOffset As Long
+            Select Case methodX
+                Case "All": colOffset = 0
+                Case "SBT": colOffset = 2
+                Case "DBT": colOffset = 4
+                Case "2StepET": colOffset = 6
+                Case "Cleavage": colOffset = 8
+                Case "想定外": colOffset = 10
+                Case Else: GoTo SkipMethod
+            End Select
+
+            ' === 値の取得 ===
+            Dim key As String, n As Long, d As Long
+
+            If methodX = "All" Then
+                Dim totalN As Long: totalN = 0
+                Dim totalD As Long: totalD = 0
+                Dim k As Variant
+                For Each k In Array("SBT", "DBT", "2StepET", "Cleavage", "想定外")
+                    key = "GS_" & monX & " 月_" & k
+                    If numDict.Exists(key) Then totalN = totalN + numDict(key)
+                    If denDict.Exists(key) Then totalD = totalD + denDict(key)
+                Next k
+                n = RoundHalfUp(totalN)
+                d = totalD
+            Else
+                key = "GS_" & monX & " 月_" & methodX
+                If numDict.Exists(key) Then n = RoundHalfUp(numDict(key)) Else n = 0
+                If denDict.Exists(key) Then d = denDict(key) Else d = 0
+            End If
+
+            ' === 割合出力 ===
+            With wsOut.Cells(r, colBase + colOffset)
+                If d > 0 Then
+                    .NumberFormatLocal = "0.0%"
+                    .value = n / d
+                Else
+'                    .value = ""
+                End If
+            End With
+
+            ' === 内訳出力 ===
+            With wsOut.Cells(r, colBase + colOffset + 1)
+                .NumberFormatLocal = "@"
+                If d > 0 Then
+                    .value = n & "/" & d
+                Else
+'                    .value = ""
+                End If
+                .Font.Size = 9
+                .HorizontalAlignment = xlLeft
+            End With
+
+SkipMethod:
+        Next methodX
+    Next m
+    
+    ' === デバッグ出力：分母 ===
+Debug.Print "【DenDict：分母（卵数）】"
+Dim kk As Variant
+For Each kk In denDict.keys
+    Debug.Print kk & " : " & denDict(kk)
+Next kk
+
+' === デバッグ出力：分子 ===
+Debug.Print "【NumDict：分子（卵数）】"
+Dim kk2 As Variant
+For Each kk2 In numDict.keys
+    Debug.Print kk2 & " : " & numDict(kk2)
+Next kk2
+
+
+End Sub
+Private Sub LoadCountsFromPivot_Generic( _
+    pt As pivotTable, _
+    ByRef outDict As Object, _
+    ByVal y As String, _
+    ByVal clinicID As String, _
+    ByVal prefix As String, _
+    ByVal isNumerator As Boolean)
+
+'ET07,08,09(GS, FHB, LB)のサブルーチン
+
+    Dim ws As Worksheet: Set ws = pt.Parent
+    Dim r As Long, rr As Long, c As Long
+    Dim yearCol As Long: yearCol = pt.TableRange2.Column
+    Dim rowStart As Long: rowStart = pt.RowRange.row + 1
+    Dim rowEnd As Long: rowEnd = pt.TableRange2.row + pt.TableRange2.Rows.count - 1
+    Dim colStart As Long: colStart = pt.TableRange2.Column
+    Dim colEnd As Long: colEnd = pt.TableRange2.Column + pt.TableRange2.Columns.count - 1
+
+    Dim prevRawCat As String: prevRawCat = ""
+    Dim value, yearVal, monthVal, clinicVal, rawCat As String
+    Dim key As String, prevClinic As String
+
+    Dim colLabelDepth As Long: colLabelDepth = pt.ColumnRange.Rows.count
+    Dim headerClinicRow As Long, headerCatRow As Long
+    
+    
+'    ' === 分子かどうかの判定（prefixに"Num"を含むか）===
+'    Dim isNumerator As Boolean: isNumerator = (InStr(prefix, "_Num") > 0)
+
+    ' === 3階層（分類 → 院識別）の構造に対応 ===
+    If colLabelDepth = 3 Then
+        headerCatRow = pt.RowRange.row - 1       ' 分類
+        headerClinicRow = pt.RowRange.row  ' 院識別番号
+    Else
+        MsgBox "列ラベル階層が想定外です。"
+        Exit Sub
+    End If
+
+    ' === 列ループ：分類 × 院識別番号 ===
+    For c = colStart To colEnd
+
+        ' 分類の取得
+        If ws.Cells(headerCatRow, c).value <> "" Then
+            rawCat = Trim(ws.Cells(headerCatRow, c).value)
+            If rawCat = "総計" Then Exit For
+            prevRawCat = rawCat
+        Else
+            rawCat = prevRawCat
+        End If
+
+        ' 分類名から methodX に変換
+        Dim methodX As String
+        Select Case rawCat
+            Case "1BT": methodX = "SBT"
+            Case "2BT": methodX = "DBT"
+            Case "2StepET": methodX = "2StepET"
+            Case "1分割胚", "2分割胚": methodX = "Cleavage"
+            Case "1想定外STAGE", "2想定外STAGE", "混在：1想定外 + 他": methodX = "想定外"
+            Case Else: methodX = "その他"
+        End Select
+
+        ' 院識別番号の取得
+        If ws.Cells(headerClinicRow, c).value <> "" Then
+            prevClinic = Format(ws.Cells(headerClinicRow, c).value, "00")
+        End If
+        clinicVal = Format(prevClinic, "00")
+
+        ' 対象クリニック以外はスキップ
+        If clinicVal <> clinicID Then GoTo NextColumn
+
+        ' 行ループ：月単位に件数取得
+        For rr = rowStart To rowEnd - 1
+            yearVal = ws.Cells(rr, yearCol).value
+
+            If IsNumeric(yearVal) Then
+                y = yearVal
+                monthVal = ""  ' 年更新時に月を初期化
+            Else
+                monthVal = yearVal  ' "1 月"など
+
+                If y = gYear Then
+                    value = ws.Cells(rr, c).value
+                    If IsNumeric(value) Then
+                    
+
+                        ' === 分子の場合のみ、件数補正（卵数 ÷ 2） ===
+                        If isNumerator Then
+                            Select Case rawCat
+                                Case "2BT", "2StepET", "2分割胚", "2想定外STAGE", "混在：1想定外 + 他"
+                                    value = value / 2
+                            End Select
+                        End If
+
+                    
+                        key = prefix & "_" & monthVal & "_" & methodX
+                        If outDict.Exists(key) Then
+                            outDict(key) = outDict(key) + value
+                        Else
+                            outDict.Add key, value
+                        End If
+                    End If
+                End If
+            End If
+        Next rr
+
+NextColumn:
+    Next c
+
+End Sub
+Sub ET_ClinicStats_08_Output_FHB_MonthlyRates()
+
+    ' === 共通の初期設定 ===
+'    Call SetGlobalVars
+'    Call ET_ClinicStats_01_CreateReportSheet
+'    Call ET_ClinicStats_02_ETcount
+'    Call ET_ClinicStats_07_Output_GS_MonthlyRates
+
+    ' === シート・ピボット設定 ===
+    Dim wsDen As Worksheet, wsNum As Worksheet, wsOut As Worksheet
+    Set wsDen = ThisWorkbook.Sheets("S12_母数_FHB")
+    Set wsNum = ThisWorkbook.Sheets("S12_FHB")
+    Set wsOut = ThisWorkbook.Sheets("移植_月別レポート")
+
+    Dim ptDen As pivotTable, ptNum As pivotTable
+    Set ptDen = wsDen.PivotTables("P12_母数_FHB")
+    Set ptNum = wsNum.PivotTables("P12_FHB")
+
+    ' === 年・院識別設定 ===
+    Dim targetYear As String: targetYear = CStr(gYear)
+    Dim targetClinic As String: targetClinic = gClinicID
+
+    ' === ピボットから辞書へ取得（卵数ベース）===
+    Dim denDict As Object, numDict As Object
+    Set denDict = CreateObject("Scripting.Dictionary")
+    Set numDict = CreateObject("Scripting.Dictionary")
+
+    Call LoadCountsFromPivot_Generic(ptDen, denDict, targetYear, targetClinic, "FHB", False) ' 分母
+    Call LoadCountsFromPivot_Generic(ptNum, numDict, targetYear, targetClinic, "FHB", True) ' 分子
+
+    ' === 出力処理 ===
+    Dim methodList As Variant
+    methodList = Array("All", "SBT", "DBT", "2StepET", "Cleavage", "想定外")
+
+    Dim m As Long
+    For m = 1 To 12
+        Dim monX As String: monX = CStr(m)
+        Dim rowBase As Long: rowBase = 6 + 17 * ((m - 1) \ 3)
+        Dim colBase As Long: colBase = 3 + 15 * ((m - 1) Mod 3)
+        Dim r As Long: r = rowBase + 13  ' ET07より1行下に出力
+
+        Dim methodX As Variant
+        For Each methodX In methodList
+            Dim colOffset As Long
+            Select Case methodX
+                Case "All": colOffset = 0
+                Case "SBT": colOffset = 2
+                Case "DBT": colOffset = 4
+                Case "2StepET": colOffset = 6
+                Case "Cleavage": colOffset = 8
+                Case "想定外": colOffset = 10
+                Case Else: GoTo SkipMethod
+            End Select
+
+            ' === キーの組み立て・値取得 ===
+            Dim keyFHB As String, n As Long, d As Long
+
+            If methodX = "All" Then
+                Dim totalN As Long: totalN = 0
+                Dim totalD As Long: totalD = 0
+                Dim k As Variant
+                For Each k In Array("SBT", "DBT", "2StepET", "Cleavage", "想定外")
+                    keyFHB = "FHB_" & monX & " 月_" & k
+                    If numDict.Exists(keyFHB) Then totalN = totalN + numDict(keyFHB)
+                    If denDict.Exists(keyFHB) Then totalD = totalD + denDict(keyFHB)
+                Next k
+                n = totalN
+                d = totalD
+            Else
+                keyFHB = "FHB_" & monX & " 月_" & methodX
+                If numDict.Exists(keyFHB) Then n = numDict(keyFHB) Else n = 0
+                If denDict.Exists(keyFHB) Then d = denDict(keyFHB) Else d = 0
+            End If
+
+            ' === 割合出力 ===
+            With wsOut.Cells(r, colBase + colOffset)
+                If d > 0 Then
+                    .NumberFormatLocal = "0.0%"
+                    .value = n / d
+                Else
+'                    .value = ""
+                End If
+            End With
+
+            ' === 内訳出力 ===
+            With wsOut.Cells(r, colBase + colOffset + 1)
+                .NumberFormatLocal = "@"
+                If d > 0 Then
+                    .value = n & "/" & d
+                Else
+'                    .value = ""
+                End If
+                .Font.Size = 9
+                .HorizontalAlignment = xlLeft
+            End With
+
+SkipMethod:
+        Next methodX
+    Next m
+
+    ' === デバッグ出力：分母 ===
+    Debug.Print "【FHB DenDict：分母（卵数）】"
+    Dim keyD As Variant
+    For Each keyD In denDict.keys
+        Debug.Print keyD & " : " & denDict(keyD)
+    Next keyD
+
+    ' === デバッグ出力：分子 ===
+    Debug.Print "【FHB NumDict：分子（卵数）】"
+    Dim keyN As Variant
+    For Each keyN In numDict.keys
+        Debug.Print keyN & " : " & numDict(keyN)
+    Next keyN
+
+End Sub
+
+Sub ET_ClinicStats_09_Output_LB_MonthlyRates()
+
+    ' === 初期処理 ===
+'    Call SetGlobalVars
+'    Call ET_ClinicStats_01_CreateReportSheet
+'    Call ET_ClinicStats_02_ETcount
+
+    ' === シート・ピボット設定 ===
+    Dim wsDen As Worksheet, wsNum As Worksheet, wsOut As Worksheet
+    Set wsDen = ThisWorkbook.Sheets("S13_母数_出生率")
+    Set wsNum = ThisWorkbook.Sheets("S14_出生率")
+    Set wsOut = ThisWorkbook.Sheets("移植_月別レポート")
+
+    Dim ptDen As pivotTable, ptNum As pivotTable
+    Set ptDen = wsDen.PivotTables("P13_母数_出生率")
+    Set ptNum = wsNum.PivotTables("P14_出生率")
+
+    ' === 年・院識別ID ===
+    Dim targetYear As String: targetYear = CStr(gYear)
+    Dim targetClinic As String: targetClinic = gClinicID
+
+    ' === ピボットから辞書取得（卵数ベース） ===
+    Dim denDict As Object, numDict As Object
+    Set denDict = CreateObject("Scripting.Dictionary")
+    Set numDict = CreateObject("Scripting.Dictionary")
+
+    Call LoadCountsFromPivot_Generic(ptDen, denDict, targetYear, targetClinic, "LB", False) ' 分母
+    Call LoadCountsFromPivot_Generic(ptNum, numDict, targetYear, targetClinic, "LB", True) ' 分子
+
+    ' === 出力処理 ===
+    Dim methodList As Variant
+    methodList = Array("All", "SBT", "DBT", "2StepET", "Cleavage", "想定外")
+
+    Dim m As Long
+    For m = 1 To 12
+        Dim monX As String: monX = CStr(m)
+        Dim rowBase As Long: rowBase = 6 + 17 * ((m - 1) \ 3)
+        Dim colBase As Long: colBase = 3 + 15 * ((m - 1) Mod 3)
+        Dim r As Long: r = rowBase + 14  ' ET08より1行下に出力
+
+        Dim methodX As Variant
+        For Each methodX In methodList
+            Dim colOffset As Long
+            Select Case methodX
+                Case "All": colOffset = 0
+                Case "SBT": colOffset = 2
+                Case "DBT": colOffset = 4
+                Case "2StepET": colOffset = 6
+                Case "Cleavage": colOffset = 8
+                Case "想定外": colOffset = 10
+                Case Else: GoTo SkipMethod
+            End Select
+
+            ' === キーの作成と値取得 ===
+            Dim keyLB As String, n As Long, d As Long
+
+            If methodX = "All" Then
+                Dim totalN As Long: totalN = 0
+                Dim totalD As Long: totalD = 0
+                Dim k As Variant
+                For Each k In Array("SBT", "DBT", "2StepET", "Cleavage", "想定外")
+                    keyLB = "LB_" & monX & " 月_" & k
+                    If numDict.Exists(keyLB) Then totalN = totalN + numDict(keyLB)
+                    If denDict.Exists(keyLB) Then totalD = totalD + denDict(keyLB)
+                Next k
+                n = totalN
+                d = totalD
+            Else
+                keyLB = "LB_" & monX & " 月_" & methodX
+                If numDict.Exists(keyLB) Then n = numDict(keyLB) Else n = 0
+                If denDict.Exists(keyLB) Then d = denDict(keyLB) Else d = 0
+            End If
+
+            ' === 割合出力 ===
+            With wsOut.Cells(r, colBase + colOffset)
+                If d > 0 Then
+                    .NumberFormatLocal = "0.0%"
+                    .value = n / d
+                Else
+'                    .value = ""
+                End If
+            End With
+
+            ' === 内訳出力 ===
+            With wsOut.Cells(r, colBase + colOffset + 1)
+                .NumberFormatLocal = "@"
+                If d > 0 Then
+                    .value = n & "/" & d
+                Else
+'                    .value = ""
+                End If
+                .Font.Size = 9
+                .HorizontalAlignment = xlLeft
+            End With
+
+SkipMethod:
+        Next methodX
+    Next m
+
+    ' === デバッグ出力 ===
+    Debug.Print "【LB DenDict：分母（卵数）】"
+    Dim keyD_LB As Variant
+    For Each keyD_LB In denDict.keys
+        Debug.Print keyD_LB & " : " & denDict(keyD_LB)
+    Next keyD_LB
+
+    Debug.Print "【LB NumDict：分子（卵数）】"
+    Dim keyN_LB As Variant
+    For Each keyN_LB In numDict.keys
+        Debug.Print keyN_LB & " : " & numDict(keyN_LB)
+    Next keyN_LB
+
+End Sub
+
+
+' === 分類名ごとの行オフセットを返す関数 ===
+Function GetMethodOffset(method As String) As Long
+    Select Case method
+        Case "All": GetMethodOffset = 0
+        Case "1BT": GetMethodOffset = 2
+        Case "2BT": GetMethodOffset = 4
+        Case "2StepET": GetMethodOffset = 6
+        Case "Cleavage": GetMethodOffset = 8
+        Case "その他": GetMethodOffset = 10
+        Case Else: GetMethodOffset = 12 ' 万が一のとき
+    End Select
+End Function
+
+
+Sub Debug_GlobalEggCount()
+' デバック用（ET05）のコード
+    Dim key As Variant
+
+    ' === 辞書が初期化されていない場合 ===
+    If globalEgg_Count Is Nothing Then
+        Debug.Print "globalEgg_Count is Nothing"
+        Exit Sub
+    End If
+
+    ' === 辞書が空だった場合 ===
+    If globalEgg_Count.count = 0 Then
+        Debug.Print "globalEgg_Count is empty"
+        Exit Sub
+    End If
+
+    ' === 辞書の中身をイミディエイトに出力 ===
+    Debug.Print "▼ globalEgg_Count 内容一覧 ▼"
+    For Each key In globalEgg_Count.keys
+        Debug.Print key & " → " & globalEgg_Count(key)
+    Next key
+End Sub
+
+Sub DebugGardnerDict(dict As Object)
+' デバック用（ET05）のコード
+    Dim k As Variant
+
+    If dict Is Nothing Then
+        Debug.Print "辞書が Nothing"
+        Exit Sub
+    End If
+
+    If dict.count = 0 Then
+        Debug.Print "辞書が空"
+        Exit Sub
+    End If
+
+    Debug.Print "▼ 辞書の内容一覧 ▼"
+    For Each k In dict.keys
+        Debug.Print k & " → " & dict(k)
+    Next k
+End Sub
+
+Sub ET_SearchMonthTitle()
+
+    Dim ws As Worksheet
+'    Set ws = ThisWorkbook.Sheets("移植_月別レポート")
+    Set ws = ActiveSheet ' ← 採卵でも移植でも使えるように
+
+    Dim selectedMonth As String
+    selectedMonth = Trim(ws.Range("F3").value)
+
+    If selectedMonth = "" Then
+        MsgBox "月が選択されていません。", vbExclamation
+        Exit Sub
+    End If
+
+    Dim monthNames As Variant
+    monthNames = Array("1月", "2月", "3月", "4月", "5月", "6月", _
+                       "7月", "8月", "9月", "10月", "11月", "12月")
+
+    Dim i As Integer
+    For i = 0 To 11
+        If monthNames(i) = selectedMonth Then
+            ' === テンプレート作成と完全に一致させる ===
+            Dim r As Long, c As Long
+            r = 6 + 17 * (i \ 3)
+            c = 2 + 15 * (i Mod 3)
+
+            Dim targetCell As Range
+            Set targetCell = ws.Cells(r, c) ' 月タイトルのセル
+
+            ' Application.Goto のみでジャンプ（ScrollRowは不要）
+            Application.Goto Reference:=targetCell, Scroll:=True
+            ActiveWindow.ScrollColumn = ws.Cells(r, c).Column - 1
+
+            Exit Sub
+        End If
+    Next i
+
+    MsgBox "指定された月が見つかりません。", vbExclamation
+
+End Sub
+
+Function RoundHalfUp(ByVal value As Double) As Long
+    ' 正の数は+0.5して切り捨て（=切り上げ）
+    ' 負の数も同様の処理を逆方向で
+    If value >= 0 Then
+        RoundHalfUp = Int(value + 0.5)
+    Else
+        RoundHalfUp = -Int(-value + 0.5)
+    End If
+End Function
+
