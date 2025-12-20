@@ -1,0 +1,2122 @@
+' 採卵サマリーシートを作成するロジックです
+
+Public fertilizedCountDict As Object
+Public ActiveMethodGardnerCounts As Object
+
+Sub opu01_CreateReportSheet()
+    ' 採卵サマリーシートを新規作成し、ピボットテーブルから情報をまとめて出力するマクロ
+
+    Dim ws As Worksheet
+    Dim pt As pivotTable
+    Dim rng As Range
+    Dim cell As Range
+    Dim dict As Object
+    Dim Yearcount As Integer
+    Dim row As Long
+    Dim col As Long
+    Dim clinicCol As Long
+    Dim i As Integer
+
+    ' 既存の「採卵サマリー」シートがあれば削除
+    On Error Resume Next
+    Set ws = ThisWorkbook.Sheets("採卵サマリー")
+    On Error GoTo 0
+
+    If Not ws Is Nothing Then
+        Application.DisplayAlerts = False
+        ws.Delete
+        Application.DisplayAlerts = True
+    End If
+
+    ' 新しいシートを追加して名前を設定
+    Set ws = ThisWorkbook.Sheets.Add(After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.count))
+    ws.name = "採卵サマリー"
+
+    ' タイトルや見出しを入力
+    With ws
+        With .Cells(2, 3)
+        .value = "採卵サマリー "  ' C2
+        .Font.Size = 14
+        .Font.Bold = True
+        End With
+'        .Cells(2, 3).value = "採卵サマリー" ' C2
+        .Cells(5, 3).HorizontalAlignment = xlCenter
+        .Cells(5, 3).value = "全院"         ' B4
+        .Cells(2, 5).HorizontalAlignment = xlCenter
+        .Cells(2, 5).value = "検索"
+        .Cells(2, 6).HorizontalAlignment = xlCenter
+        .Cells(2, 6).value = "院名"
+        .Cells(2, 7).HorizontalAlignment = xlCenter
+        .Cells(2, 7).value = "年度"
+        .Cells(3, 6).HorizontalAlignment = xlCenter
+        .Cells(3, 7).HorizontalAlignment = xlCenter
+    End With
+    
+        With ws.Range("E2:G3")
+    .Borders.LineStyle = xlContinuous
+    .Borders.Weight = xlThin
+    .Interior.Color = RGB(221, 235, 247)
+End With
+
+ws.Range("E2").Borders(xlEdgeBottom).LineStyle = xlNone
+ws.Range("F3:G3").Interior.Color = RGB(255, 255, 255)
+    
+    '年度の取得
+    yearKeys = GetYearsFromPivotTable()
+
+    ' 院名と識別番号を取得し、昇順に並べ替え
+    Dim hospitalMap As Object
+    Dim sortedKeys As Variant
+    Dim j As Long
+    Dim outputSheet As Worksheet
+    Dim outputRow As Long
+    Dim outputCol As Long
+
+    Set hospitalMap = GetHospitalMap()
+    sortedKeys = SortKeysByValue(hospitalMap)
+    Dim hospitalCount As Long
+    hospitalCount = hospitalMap.count
+    
+    ' F3 に院名プルダウン設定
+    ' sortedKeysの先頭に "全院" を追加
+    Dim allKeys() As String
+    ReDim allKeys(0 To UBound(sortedKeys) + 1)
+
+    allKeys(0) = "全院"
+    Dim n As Long
+    For n = 0 To UBound(sortedKeys)
+        allKeys(n + 1) = sortedKeys(n)
+    Next n
+    
+    Dim keyList As String
+    keyList = Join(allKeys, ",")
+
+    With ws.Range("F3").Validation
+        .Delete
+        .Add Type:=xlValidateList, AlertStyle:=xlValidAlertStop, _
+            Operator:=xlBetween, Formula1:=keyList
+        .IgnoreBlank = True
+        .InCellDropdown = True
+    End With
+
+    ' G3 に年度プルダウン設定
+    ' yearKeys の先頭に "全期間" を追加
+Dim allYears() As String
+ReDim allYears(0 To UBound(yearKeys) + 1)
+
+allYears(0) = "全期間"
+Dim m As Long
+For m = 0 To UBound(yearKeys)
+    allYears(m + 1) = yearKeys(UBound(yearKeys) - m)
+Next m
+    
+    Dim yearStr As String
+    yearStr = Join(allYears, ",")
+
+    With ws.Range("G3").Validation
+        .Delete
+        .Add Type:=xlValidateList, AlertStyle:=xlValidAlertStop, _
+            Operator:=xlBetween, Formula1:=yearStr
+        .IgnoreBlank = True
+        .InCellDropdown = True
+    End With
+
+    ' C列（列番号3）から出力開始
+    col = 3
+
+    ' 各院ごとに年度別のレイアウトと年度見出しを出力
+    For j = 0 To hospitalCount
+        clinicCol = col + j * 9 ' 各院ごとに9列ずらす
+        row = 5
+
+        ' 最初に「全期間」のブロックを出力
+        With ThisWorkbook.Sheets("採卵サマリー")
+            .Cells(row, clinicCol + 1).value = "全期間"
+            .Cells(row, clinicCol).Font.Size = 12
+            .Cells(row, clinicCol + 1).Font.Size = 12
+            .Cells(row + 1, clinicCol).value = "総採卵件数"
+            .Cells(row + 2, clinicCol + 1).value = "C-IVF"
+            .Cells(row + 2, clinicCol + 3).value = "ICSI"
+            .Cells(row + 2, clinicCol + 5).value = "IVM-ICSI"
+            .Cells(row + 3, clinicCol).value = "卵数"
+            .Cells(row + 4, clinicCol).value = "2PN率(%)"
+            .Cells(row + 5, clinicCol).value = "胚盤胞到達率/2PN率(%)"
+            .Cells(row + 6, clinicCol).value = "胚盤胞凍結率/2PN率(%)"
+            
+         '  行の高さを23に設定（C7～C13に対応）
+            .Rows(row + 1 & ":" & row + 7).RowHeight = 23
+            
+    ' 罫線を引く(上下端）
+    With .Range(.Cells(row + 1, clinicCol), .Cells(row + 6, clinicCol + 6))
+
+' 上下の罫線を太く（中太）
+.Borders(xlEdgeTop).LineStyle = xlContinuous
+.Borders(xlEdgeTop).Weight = xlThick
+
+.Borders(xlEdgeBottom).LineStyle = xlContinuous
+.Borders(xlEdgeBottom).Weight = xlThick
+'
+'        ' --- 中央揃え ---
+    .HorizontalAlignment = xlCenter
+    .VerticalAlignment = xlCenter
+
+    End With
+    
+     ' 罫線を引く(内側）
+    With .Range(.Cells(row + 2, clinicCol), .Cells(row + 2, clinicCol + 6))
+    .Borders(xlEdgeTop).LineStyle = xlContinuous
+    .Borders(xlEdgeTop).Weight = xlThin
+'    .Borders(xlEdgeBottom).LineStyle = xlContinuous
+'    .Borders(xlEdgeBottom).Weight = xlThin
+    .HorizontalAlignment = xlCenter
+    .VerticalAlignment = xlCenter
+End With
+
+     ' 罫線を引く(内側2）
+    With .Range(.Cells(row + 2, clinicCol + 1), .Cells(row + 2, clinicCol + 6))
+    .Borders(xlEdgeBottom).LineStyle = xlContinuous
+    .Borders(xlEdgeBottom).Weight = xlThin
+    .HorizontalAlignment = xlCenter
+    .VerticalAlignment = xlCenter
+End With
+    
+        End With
+        
+    ' 背景を白くする
+   With ws.Range(ws.Cells(row, clinicCol), ws.Cells(row + 6, clinicCol + 6))
+    
+    .Interior.Color = RGB(255, 255, 255)
+    
+    End With
+    
+    ' 背景を灰色にする
+   With ws.Range(ws.Cells(row + 1, clinicCol), ws.Cells(row + 1, clinicCol + 6))
+    
+    .Interior.Color = RGB(242, 242, 242)
+    
+    End With
+    
+            ' ボタン作成
+        Set btnGoBack = ws.Buttons.Add( _
+         ws.Cells(row + 6, clinicCol + 6).Left + 60, _
+         ws.Cells(row + 6, clinicCol + 6).Top, _
+          40, 20) '
+
+    With btnGoBack
+'        .OnAction = "btnGoBack_First_i" & i & "_j" & j
+        .Caption = "戻る"
+        .name = "btnGoBack_First_i" & i & "_j" & j
+    End With
+
+        
+        row = row + 8 ' 次のブロックの開始位置
+
+        ' 年度を上から下に出力（最新→過去）+ レイアウト作成
+        For i = UBound(yearKeys) To LBound(yearKeys) Step -1
+            With ThisWorkbook.Sheets("採卵サマリー")
+            
+            If j = 0 Then
+            .Cells(row, clinicCol).HorizontalAlignment = xlCenter
+            .Cells(row, clinicCol).value = "全院"
+            End If
+            
+            If j <= UBound(sortedKeys) Then
+            .Cells(row, clinicCol + 9).HorizontalAlignment = xlCenter
+            .Cells(row, clinicCol + 9).value = sortedKeys(j)
+            End If
+            
+                .Cells(row, clinicCol + 1).value = yearKeys(i) & "年"
+                .Cells(row + 1, clinicCol).value = "総採卵件数"
+                .Cells(row + 2, clinicCol + 1).value = "C-IVF"
+                .Cells(row + 2, clinicCol + 3).value = "ICSI"
+                .Cells(row + 2, clinicCol + 5).value = "IVM-ICSI"
+                .Cells(row + 3, clinicCol).value = "卵数"
+                .Cells(row + 4, clinicCol).value = "2PN率(%)"
+                .Cells(row + 5, clinicCol).value = "胚盤胞到達率/2PN率(%)"
+                .Cells(row + 6, clinicCol).value = "胚盤胞凍結率/2PN率(%)"
+                
+                         '  行の高さを23に設定（C7～C13に対応）
+            .Rows(row + 1 & ":" & row + 7).RowHeight = 23
+            
+                ' 罫線を引く(上下端）
+    With .Range(.Cells(row + 1, clinicCol), .Cells(row + 6, clinicCol + 6))
+
+' 上下の罫線を太く（中太）
+.Borders(xlEdgeTop).LineStyle = xlContinuous
+.Borders(xlEdgeTop).Weight = xlThick
+
+.Borders(xlEdgeBottom).LineStyle = xlContinuous
+.Borders(xlEdgeBottom).Weight = xlThick
+'
+'        ' --- 中央揃え ---
+    .HorizontalAlignment = xlCenter
+    .VerticalAlignment = xlCenter
+
+    End With
+    
+     ' 罫線を引く(内側）
+    With .Range(.Cells(row + 2, clinicCol), .Cells(row + 2, clinicCol + 6))
+    .Borders(xlEdgeTop).LineStyle = xlContinuous
+    .Borders(xlEdgeTop).Weight = xlThin
+'    .Borders(xlEdgeBottom).LineStyle = xlContinuous
+'    .Borders(xlEdgeBottom).Weight = xlThin
+    .HorizontalAlignment = xlCenter
+    .VerticalAlignment = xlCenter
+End With
+
+     ' 罫線を引く(内側2）
+    With .Range(.Cells(row + 2, clinicCol + 1), .Cells(row + 2, clinicCol + 6))
+    .Borders(xlEdgeBottom).LineStyle = xlContinuous
+    .Borders(xlEdgeBottom).Weight = xlThin
+    .HorizontalAlignment = xlCenter
+    .VerticalAlignment = xlCenter
+End With
+                
+            End With
+            
+   ' 背景を白くする
+   With ws.Range(ws.Cells(row, clinicCol), ws.Cells(row + 6, clinicCol + 6))
+    
+    .Interior.Color = RGB(255, 255, 255)
+    
+    End With
+    
+    ' 背景を灰色にする
+   With ws.Range(ws.Cells(row + 1, clinicCol), ws.Cells(row + 1, clinicCol + 6))
+    
+    .Interior.Color = RGB(242, 242, 242)
+    
+    End With
+    
+                ' ボタン作成
+        Set btnGoBack = ws.Buttons.Add( _
+         ws.Cells(row + 6, clinicCol + 6).Left + 60, _
+         ws.Cells(row + 6, clinicCol + 6).Top, _
+          40, 20) '
+
+    With btnGoBack
+'        .OnAction = "btnGoBack_First_i" & i & "_j" & j
+        .Caption = "戻る"
+        .name = "btnGoBack_Second_i" & i & "_j" & j
+    End With
+
+            row = row + 8 ' 次の年度の行位置
+        Next i
+    Next j
+    
+
+    ' 列幅・整列の調整
+    Dim formatCol As Long
+    For j = 0 To hospitalCount
+        formatCol = 3 + j * 9
+
+        With ThisWorkbook.Sheets("採卵サマリー")
+            .Columns(formatCol).AutoFit
+            .Columns(formatCol + 1).ColumnWidth = 8
+            .Columns(formatCol + 3).ColumnWidth = 8
+            .Columns(formatCol + 5).ColumnWidth = 8
+
+            .Columns(formatCol + 1).HorizontalAlignment = xlCenter
+            .Columns(formatCol + 3).HorizontalAlignment = xlCenter
+            .Columns(formatCol + 5).HorizontalAlignment = xlCenter
+            
+            .Columns(formatCol + 2).Font.Size = 9
+            .Columns(formatCol + 4).Font.Size = 9
+            .Columns(formatCol + 6).Font.Size = 9
+            
+            ' 列幅設定
+            .Columns(formatCol + 2).ColumnWidth = 11
+            .Columns(formatCol + 4).ColumnWidth = 11
+            
+            .Columns(formatCol + 2).HorizontalAlignment = xlLeft
+            .Columns(formatCol + 4).HorizontalAlignment = xlLeft
+            .Columns(formatCol + 6).HorizontalAlignment = xlLeft
+
+        End With
+    Next j
+    
+    With Range("E2:G3")
+    .Font.Size = 11
+    .VerticalAlignment = xlCenter
+    .HorizontalAlignment = xlCenter
+End With
+
+    ' 院名をH列から右に8列おきに出力
+    Set outputSheet = ThisWorkbook.Sheets("採卵サマリー")
+    outputRow = 5
+    outputCol = 12
+
+    For j = LBound(sortedKeys) To UBound(sortedKeys)
+        outputSheet.Cells(outputRow, outputCol).HorizontalAlignment = xlCenter
+        outputSheet.Cells(outputRow, outputCol).value = sortedKeys(j)
+        outputCol = outputCol + 9
+    Next j
+
+    Set hospitalMap = Nothing
+    Set dict = Nothing
+    
+        Dim btn As Button
+    Dim topLeftCell As Range
+    Set topLeftCell = ws.Range("G2")
+
+    ' 既存のボタンがあれば削除（重複防止）
+    Dim shp As Shape
+    For Each shp In ws.Shapes
+        If shp.Type = msoFormControl Then
+            If shp.topLeftCell.Address = topLeftCell.Address Then shp.Delete
+        End If
+    Next shp
+
+    ' ボタン作成
+        Set btn = ws.Buttons.Add( _
+         topLeftCell.Left + 80, _
+         topLeftCell.Top + 15, _
+          80, 25) '
+
+    With btn
+'        .OnAction = "SearchClinicYear"
+        .Caption = "検索"
+        .name = "btnSearch"
+    End With
+        
+        ' ボタン名（例: "btnSearch"）にマクロを割り当てる
+    With ws.Shapes("btnSearch")
+        .OnAction = "Search_Sheet2" ' ←割り当てたいSub名
+    End With
+    
+    Dim shpb As Shape
+    For Each shpb In ws.Shapes
+        If shpb.Type = msoFormControl Then
+            If InStr(shpb.name, "btnGoBack") > 0 Then
+                shpb.OnAction = "GoToA1_Sheet2" ' ←割り当てたいマクロ名
+            End If
+        End If
+    Next shpb
+    
+    targetRow = row ' ← 公開変数にセット
+        
+    Set abtn = ws.Buttons.Add( _
+    topLeftCell.Left + 80 + 80 + 10, _
+    topLeftCell.Top + 15, _
+    120, 25)
+    With abtn
+        .Caption = "タイトルに戻る"
+        .OnAction = "GoBackHome"
+    End With
+
+End Sub
+
+' クイックソート：配列内の年度を昇順に並べ替える
+Sub QuickSort(arr As Variant, low As Long, high As Long)
+    Dim pivot As Variant, i As Long, j As Long, temp As Variant
+    If low < high Then
+        pivot = arr((low + high) \ 2)
+        i = low: j = high
+        Do
+            Do While arr(i) < pivot: i = i + 1: Loop
+            Do While arr(j) > pivot: j = j - 1: Loop
+            If i <= j Then
+                temp = arr(i): arr(i) = arr(j): arr(j) = temp
+                i = i + 1: j = j - 1
+            End If
+        Loop While i <= j
+        Call QuickSort(arr, low, j)
+        Call QuickSort(arr, i, high)
+    End If
+End Sub
+
+' 院名とその識別番号のマップを返す関数
+Function GetHospitalMap() As Object
+    Dim hospitalMap As Object
+    Set hospitalMap = CreateObject("Scripting.Dictionary")
+
+    hospitalMap.Add "Clinic_A", 1
+    hospitalMap.Add "Clinic_B", 2
+    hospitalMap.Add "Clinic_C", 3
+    hospitalMap.Add "Clinic_D", 4
+    hospitalMap.Add "Clinic_E", 5
+    hospitalMap.Add "Clinic_F", 6
+    hospitalMap.Add "Clinic_G", 7
+'    hospitalMap.Add "Clinic_H", 8
+'    hospitalMap.Add "Clinic_I", 9
+
+    Set GetHospitalMap = hospitalMap
+End Function
+
+' 院の識別番号で昇順に並べ替えた院名リストを返す関数
+Function SortKeysByValue(dic As Object) As Variant
+    Dim keys() As Variant, values() As Variant
+    Dim i As Long, j As Long, tempK As Variant, tempV As Variant
+
+    keys = dic.keys
+    values = dic.items
+
+    For i = LBound(values) To UBound(values) - 1
+        For j = i + 1 To UBound(values)
+            If values(i) > values(j) Then
+                tempV = values(i): values(i) = values(j): values(j) = tempV
+                tempK = keys(i): keys(i) = keys(j): keys(j) = tempK
+            End If
+        Next j
+    Next i
+
+    SortKeysByValue = keys
+End Function
+' 総採卵件数の取得
+Sub opu02_opuCount()
+
+    Dim wb As Workbook
+    Dim wsSummary As Worksheet
+    Dim pivotSheet As Worksheet
+    Dim pivotTable As pivotTable
+    Dim dataRange As Range
+    Dim tblRange As Range
+    Dim cell As Range
+    Dim headerCell As Range
+    Dim value As Variant
+
+    Dim yearRow As Long
+    Dim totalRow As Long
+    Dim colNum As Long
+    Dim maxYear As Long
+    Dim minYear As Long
+    Dim currentRowOffset As Long
+    Dim year As Long
+    Dim clinicCol As Long
+    Dim baseCell As Range
+    Dim i As Long
+    Dim currentYear As Variant
+
+    Dim clinicDict As Object
+    Set clinicDict = CreateObject("Scripting.Dictionary")
+
+    Set wb = ThisWorkbook
+    Set wsSummary = wb.Sheets("採卵サマリー")
+    Set pivotSheet = wb.Sheets("S01_総採卵件数")
+    Set pivotTable = pivotSheet.PivotTables("P01_総採卵件数")
+
+    Set dataRange = pivotTable.DataBodyRange
+    Set tblRange = pivotTable.TableRange1
+
+    totalRow = dataRange.Cells(dataRange.Rows.count, 1).row
+
+    value = dataRange.Cells(dataRange.Rows.count, dataRange.Columns.count).value
+    If IsEmpty(value) Or IsNull(value) Or value = "" Then value = 0
+    wsSummary.Range("D6").value = value
+
+
+'年度の取得（ピボットから）
+    maxYear = 0
+    minYear = 9999
+    For Each cell In tblRange.Columns(1).Cells
+        If cell.IndentLevel = 0 And IsNumeric(cell.value) And Len(cell.value) = 4 Then
+            If CLng(cell.value) > maxYear Then maxYear = CLng(cell.value)
+            If CLng(cell.value) < minYear Then minYear = CLng(cell.value)
+        End If
+    Next cell
+
+    If maxYear = 0 Or minYear = 9999 Then
+        MsgBox "年度情報が見つかりません", vbExclamation
+        Exit Sub
+    End If
+
+    Dim totalCol As Long
+    totalCol = tblRange.Columns(tblRange.Columns.count).Column
+
+    currentRowOffset = 8
+    For year = maxYear To minYear Step -1
+        Dim yearTotal As Double
+        yearTotal = 0
+        
+        currentYear = ""
+
+        For Each cell In tblRange.Columns(1).Cells
+            If cell.IndentLevel = 0 And IsNumeric(cell.value) Then
+                currentYear = cell.value
+            ElseIf cell.IndentLevel = 1 And currentYear = year Then
+                Dim rowVal As Variant
+                rowVal = pivotSheet.Cells(cell.row, totalCol).value
+                If IsNumeric(rowVal) Then
+                    yearTotal = yearTotal + rowVal
+                End If
+            End If
+        Next cell
+
+        wsSummary.Range("D6").offset(currentRowOffset, 0).value = yearTotal
+        currentRowOffset = currentRowOffset + 8
+    Next year
+
+'院識別番号の取得（ピボットから）
+    For Each headerCell In tblRange.Rows(2).Cells
+        If IsNumeric(headerCell.value) Then
+            clinicDict(CStr(headerCell.value)) = headerCell.Column
+        End If
+    Next headerCell
+
+    Dim sortedClinics As Variant
+    sortedClinics = SortKeysByValue(clinicDict)
+
+    For i = 0 To UBound(sortedClinics)
+        Dim clinicID As String
+        clinicID = sortedClinics(i)
+        clinicCol = clinicDict(clinicID)
+
+        Set baseCell = wsSummary.Cells(6, 4 + (i + 1) * 9)
+
+        value = pivotSheet.Cells(totalRow, clinicCol).value
+        If IsEmpty(value) Or IsNull(value) Or value = "" Then value = 0
+        baseCell.value = value
+
+        currentRowOffset = 8
+        For year = maxYear To minYear Step -1
+            Dim clinicYearTotal As Double
+            clinicYearTotal = 0
+            
+            currentYear = ""
+
+            For Each cell In tblRange.Columns(1).Cells
+                If cell.IndentLevel = 0 And IsNumeric(cell.value) Then
+                    currentYear = cell.value
+                ElseIf cell.IndentLevel = 1 And currentYear = year Then
+                    Dim clinicVal As Variant
+                    clinicVal = pivotSheet.Cells(cell.row, clinicCol).value
+                    If IsNumeric(clinicVal) Then
+                        clinicYearTotal = clinicYearTotal + clinicVal
+                    End If
+                End If
+            Next cell
+
+            baseCell.offset(currentRowOffset, 0).value = clinicYearTotal
+            currentRowOffset = currentRowOffset + 8
+        Next year
+    Next i
+
+End Sub
+
+' 媒精した卵数の集計
+Sub opu03_IVFeggCount()
+
+    Dim wsPivot As Worksheet
+    Dim wsSummary As Worksheet
+    Dim pt As pivotTable
+    Dim lastCol As Long, lastRow As Long
+    Dim methodRow As Long, clinicRow As Long
+    Dim yearCol As Long
+    Dim totalRow As Long
+    Dim colLabel1 As String, colLabel2 As String
+    Dim prevLabel1 As String
+    Dim value As Variant
+    Dim c As Long, r As Long
+    Dim totalSum As Double
+    Dim currentRowOffset As Long
+    Dim year As Variant
+    Dim cell As Range
+    Dim methodName As Variant
+    Dim baseCol As Long, baseMethodCol As Long
+    Dim currentYear As Variant
+    Dim yearList As Variant
+    Dim yearArray() As Variant
+    Dim i As Long, j As Long, tmp As Variant
+    Dim yearExists As Boolean
+    Dim hospitalMap As Object
+    Dim sortedHospitals As Variant
+    Dim hospitalName As Variant
+    Dim clinicID As String
+    Dim hospitalIndex As Long
+
+    ' ピボットシートと出力先シートの設定
+    Set wsPivot = ThisWorkbook.Sheets("S02_総CIVF_ICSI件数")
+    Set wsSummary = ThisWorkbook.Sheets("採卵サマリー")
+    Set pt = wsPivot.PivotTables("P02_総CIVF_ICSI件数")
+
+    ' ピボットの行・列情報を取得
+    yearCol = pt.TableRange2.Column
+    methodRow = pt.RowRange.row - 1
+    clinicRow = pt.RowRange.row
+    lastCol = pt.TableRange2.Columns.count + pt.TableRange2.Column - 1
+    lastRow = pt.TableRange2.Rows.count + pt.TableRange2.row - 1
+    totalRow = lastRow
+    
+    
+    yearArray = GetYearsFromPivotTable()
+    Call QuickSort(yearArray, LBound(yearArray), UBound(yearArray))
+    
+
+'    ' 年度リストを作成（IndentLevel = 0 のセルのみ追加）
+'    Set yearList = New Collection
+'    On Error Resume Next
+'    For Each cell In wsPivot.Range(wsPivot.Cells(clinicRow + 1, yearCol), wsPivot.Cells(totalRow - 1, yearCol))
+'        If cell.IndentLevel = 0 And IsNumeric(cell.value) Then
+'            yearExists = False
+'            For Each year In yearList
+'                If year = cell.value Then
+'                    yearExists = True
+'                    Exit For
+'                End If
+'            Next year
+'            If Not yearExists Then yearList.Add cell.value
+'        End If
+'    Next cell
+'    On Error GoTo 0
+'
+'    If yearList.Count = 0 Then Exit Sub
+'
+'    ' 年度リストを配列に変換して昇順にソート
+'    ReDim yearArray(1 To yearList.Count)
+'    For i = 1 To yearList.Count
+'        yearArray(i) = yearList(i)
+'    Next i
+
+
+
+    ' 院マップと識別番号でソートされた院名リストを取得
+    Set hospitalMap = GetHospitalMap()
+    sortedHospitals = SortKeysByValue(hospitalMap)
+
+    ' === 全院（hospitalIndex = -1）から開始し、各院をループ ===
+    For hospitalIndex = -1 To UBound(sortedHospitals)
+
+        ' 出力開始列を決定（D列＝4から6列おき）
+        If hospitalIndex = -1 Then
+            baseCol = 4 ' 全院
+        Else
+            hospitalName = sortedHospitals(hospitalIndex)
+            clinicID = hospitalMap(hospitalName)
+            baseCol = 4 + (hospitalIndex + 1) * 9
+        End If
+
+        ' 媒精方法ごとの処理
+        For Each methodName In Array("C-IVF", "ICSI", "IVM-ICSI")
+
+            Select Case methodName
+                Case "C-IVF": baseMethodCol = baseCol
+                Case "ICSI": baseMethodCol = baseCol + 2
+                Case "IVM-ICSI": baseMethodCol = baseCol + 4
+            End Select
+
+            ' 総計出力（1行目：例 D8）
+            totalSum = 0
+            prevLabel1 = ""
+
+            For c = yearCol + 1 To lastCol
+                colLabel1 = Trim(wsPivot.Cells(methodRow, c).value)
+                If colLabel1 <> "" Then prevLabel1 = colLabel1 Else colLabel1 = prevLabel1
+                colLabel2 = Trim(wsPivot.Cells(clinicRow, c).value)
+
+                If prevLabel1 = methodName Then
+                    If hospitalIndex = -1 Then
+                        ' 全院対象
+                        If IsNumeric(colLabel2) Then
+                            value = wsPivot.Cells(totalRow, c).value
+                            If IsNumeric(value) Then totalSum = totalSum + value
+                        End If
+                    Else
+                        ' 院別対象
+                        If colLabel2 = CStr(clinicID) Then
+                            value = wsPivot.Cells(totalRow, c).value
+                            If IsNumeric(value) Then totalSum = totalSum + value
+                        End If
+                    End If
+                End If
+            Next c
+
+            wsSummary.Cells(8, baseMethodCol).value = totalSum
+
+            ' 年度別出力（8行おきに出力）
+            currentRowOffset = 8
+
+            For i = UBound(yearArray) To LBound(yearArray) Step -1
+                year = yearArray(i)
+                totalSum = 0
+                currentYear = ""
+
+                For r = clinicRow + 1 To totalRow - 1
+                    If wsPivot.Cells(r, yearCol).IndentLevel = 0 And IsNumeric(wsPivot.Cells(r, yearCol).value) Then
+                        currentYear = wsPivot.Cells(r, yearCol).value
+                    ElseIf wsPivot.Cells(r, yearCol).IndentLevel = 1 And currentYear = year Then
+                        prevLabel1 = ""
+                        For c = yearCol + 1 To lastCol
+                            colLabel1 = Trim(wsPivot.Cells(methodRow, c).value)
+                            If colLabel1 <> "" Then prevLabel1 = colLabel1 Else colLabel1 = prevLabel1
+                            colLabel2 = Trim(wsPivot.Cells(clinicRow, c).value)
+
+                            If prevLabel1 = methodName Then
+                                If hospitalIndex = -1 Then
+                                    ' 全院対象
+                                    If IsNumeric(colLabel2) Then
+                                        value = wsPivot.Cells(r, c).value
+                                        If IsNumeric(value) Then totalSum = totalSum + value
+                                    End If
+                                Else
+                                    ' 院別対象
+                                    If colLabel2 = CStr(clinicID) Then
+                                        value = wsPivot.Cells(r, c).value
+                                        If IsNumeric(value) Then totalSum = totalSum + value
+                                    End If
+                                End If
+                            End If
+                        Next c
+                    End If
+                Next r
+
+                ' 年度別の値を出力
+                wsSummary.Cells(8 + currentRowOffset, baseMethodCol).value = totalSum
+                currentRowOffset = currentRowOffset + 8
+            Next i
+
+        Next methodName
+    Next hospitalIndex
+
+End Sub
+' 2PN率を求めて出力
+Sub opu04_FertilizationSummary()
+
+'2PN数を格納する辞書の初期化
+Set fertilizedCountDict = CreateObject("Scripting.Dictionary")
+
+    ' ワークシートの変数宣言
+    Dim wsPivot As Worksheet
+    Dim wsSummary As Worksheet
+    Dim pt As pivotTable
+    Dim lastCol As Long, lastRow As Long
+    Dim yearCol As Long
+    Dim methodRow As Long, clinicRow As Long, pnRow As Long
+    Dim totalRow As Long
+    Dim value As Variant
+    Dim c As Long, r As Long
+    Dim currentYear As String, currentMonth As String
+    Dim currentYearMonth As String
+    Dim cell As Range
+    Dim baseCol As Long
+    Dim baseRow As Long
+    Dim hospitalMap As Object
+    Dim sortedHospitals() As Variant
+    Dim hospitalName As Variant
+    Dim clinicID As String
+    Dim hospitalIndex As Long
+    Dim yearList As Variant
+    Dim yearArray() As Variant
+    Dim i As Long
+    Dim currentRowOffset As Long
+    Dim colLabelClinic As String, colLabelMethod As String, colLabelPN As String
+    Dim prevClinic As String, prevMethod As String
+    Dim pnCounts As Collection
+    Dim fertilizedCount As Long
+    Dim mediaCount As Variant
+    Dim firstDataCol As Long
+    Dim yearcheck As String
+    Dim denominator As Variant
+    Dim valueMatrix As Variant
+    Dim denomAddress As String
+
+    ' シートの設定
+    Set wsPivot = ThisWorkbook.Sheets("S03_D1受精")
+    Set wsSummary = ThisWorkbook.Sheets("採卵サマリー")
+    Set pt = wsPivot.PivotTables("P03_D1受精")
+
+    ' ピボットテーブルの情報を取得
+    yearCol = pt.TableRange2.Column
+    clinicRow = pt.TableRange2.row + 1
+    methodRow = clinicRow + 1
+    pnRow = clinicRow + 2
+
+    lastCol = pt.TableRange2.Columns.count + pt.TableRange2.Column - 1
+    lastRow = pt.TableRange2.Rows.count + pt.TableRange2.row - 1
+    totalRow = lastRow
+    firstDataCol = pt.DataBodyRange.Column  ' データ開始列
+
+    ' Collectionを使ってPNカウントの管理
+    Set methodPNCounts = CreateObject("Scripting.Dictionary")
+
+    ' ピボットテーブルから年と月を自動で取得し、methodPNCountsに格納
+    For r = pnRow + 1 To totalRow - 1
+        currentYearMonth = wsPivot.Cells(r, yearCol).value
+
+        If IsNumeric(currentYearMonth) Then
+            currentYear = currentYearMonth
+            currentMonth = "" ' 月は空にする
+        Else
+            currentMonth = currentYearMonth
+            ' 月の場合、現在の年と月を使って集計を進める
+            For c = firstDataCol To lastCol
+                colLabelClinic = Trim(wsPivot.Cells(clinicRow, c).value)
+                colLabelMethod = Trim(wsPivot.Cells(methodRow, c).value)
+                colLabelPN = Trim(wsPivot.Cells(pnRow, c).value)
+
+                ' 空であれば前回の値を使用
+                If colLabelMethod = "" Then
+                    colLabelMethod = prevMethod
+                Else
+                    prevMethod = colLabelMethod
+                End If
+
+                If colLabelClinic = "" Then
+                    colLabelClinic = prevClinic
+                Else
+                    prevClinic = colLabelClinic
+                End If
+
+                If (colLabelMethod = "C-IVF" Or colLabelMethod = "ICSI" Or colLabelMethod = "IVM-ICSI") Then
+                    If hospitalIndex = 0 Or colLabelClinic = CStr(clinicID) Then
+                        value = wsPivot.Cells(r, c).value
+
+                        If IsNumeric(value) Then
+                            Dim pnKey As String
+                            Dim yearMonthKey As String
+                            Dim clinicKey As String
+                            Dim uniqueKey As String
+
+                            If IsNumeric(colLabelPN) Then
+                                Select Case CInt(colLabelPN)
+                                    Case 0: pnKey = "0"
+                                    Case 1: pnKey = "1"
+                                    Case 2: pnKey = "2"
+                                    Case Else: pnKey = "3以上"
+                                End Select
+                            Else
+                                pnKey = "不明"
+                            End If
+
+                            yearMonthKey = currentYear & "_" & currentMonth
+                            clinicKey = colLabelClinic
+                            uniqueKey = pnKey & "_" & colLabelMethod & "_" & yearMonthKey & "_" & clinicKey
+
+                            If Not methodPNCounts.Exists(uniqueKey) Then
+                                methodPNCounts.Add uniqueKey, value
+                            Else
+                                methodPNCounts(uniqueKey) = methodPNCounts(uniqueKey) + value
+                            End If
+                        End If
+                    End If
+                End If
+            Next c
+        End If
+    Next r
+    
+    ' 年度リストを作成
+    yearList = GetYearsFromPivotTable()
+    ' 年度リストを作成（IndentLevel = 0 のセルのみ追加）
+    Dim yearDict As Object
+    Set yearDict = CreateObject("Scripting.Dictionary")
+
+    For i = UBound(yearList) To LBound(yearList) Step -1
+        If Not yearDict.Exists(yearList(i)) Then
+            yearDict.Add yearList(i), True
+        End If
+    Next i
+    
+   yearList = yearDict.keys ' Dictionary → 配列へ変換
+ 
+    ' 院マップと識別番号でソートされた院名リストを取得
+    Set hospitalMap = GetHospitalMap()
+    sortedHospitals = SortKeysByValue(hospitalMap)
+        ' === 院識別番号一覧を抽出 ===
+        Dim clinicList As Variant
+    Set clinicList = CreateObject("Scripting.Dictionary")
+    
+For i = LBound(sortedHospitals) To UBound(sortedHospitals)
+    Dim code As String
+    code = i + 1  ' "1", "2", ...
+    
+    If Not clinicList.Exists(code) Then
+        clinicList.Add code, True
+    End If
+Next i
+    
+    
+    
+
+'    ' 年度と院識別番号を取得
+''    Set yearList = New Collection
+'    Set clinicList = New Collection
+'
+'    ' methodPNCountsから年度と院識別番号を抽出
+''    Dim item As Variant
+'    For Each item In methodPNCounts
+'        uniqueKey = item
+''
+''        ' 年度を抽出してリストに追加（重複を避ける）
+''        yearcheck = Mid(uniqueKey, InStr(InStr(uniqueKey, "_") + 1, uniqueKey, "_") + 1, 4)
+''        On Error Resume Next
+'''        yearList.Add yearcheck, CStr(yearcheck)
+''        On Error GoTo 0
+'' 院識別番号を抽出してリストに追加（重複と文字列を除く）
+'clinicID = Split(uniqueKey, "_")(UBound(Split(uniqueKey, "_")))
+'If IsNumeric(clinicID) Then
+'    On Error Resume Next
+'    clinicList.Add clinicID, CStr(clinicID)
+'    On Error GoTo 0
+'End If
+'
+'    Next item
+
+
+    ' === 出力処理ここから ===
+    ' methodPNCounts に格納されたデータをもとに、媒精方法・PN数ごとに受精率を算出し、各セルへ値として出力する
+    baseRow = 9
+    baseCol = 4
+
+    ' 01_C-IVF（全期間、全院、PN=2）
+    ' methodPNCounts から、PN=2 かつ該当媒精法（例：C-IVF）の値を集計
+    fertilizedCount = 0
+    For Each item In methodPNCounts
+        uniqueKey = item
+        If Left(uniqueKey, 1) = "2" And InStr(uniqueKey, "_C-IVF") > 0 Then
+            fertilizedCount = fertilizedCount + methodPNCounts(item)
+        End If
+    Next item
+    ' 分母（前の行に入力済の値）を取得
+    denominator = wsSummary.Cells(baseRow - 1, baseCol).value
+    ' 分母が数値かつゼロでない場合に受精率を計算
+    If IsNumeric(denominator) And denominator <> 0 Then
+     wsSummary.Cells(baseRow, baseCol).NumberFormat = "0.0"
+        wsSummary.Cells(baseRow, baseCol).value = Round(fertilizedCount / denominator * 100, 1)
+        wsSummary.Cells(baseRow, baseCol + 1).value = "'" & fertilizedCount & "/" & denominator
+        fertilizedCountDict("C-IVF_Total") = fertilizedCount
+
+    Else
+        ' ゼロ除算を避けるため、0 をそのまま出力
+        wsSummary.Cells(baseRow, baseCol).value = 0
+        wsSummary.Cells(baseRow, baseCol + 1).value = "'" & fertilizedCount & "/" & denominator
+        fertilizedCountDict("C-IVF_Total") = 0
+    End If
+
+    ' 02_ICSI（全期間）
+    ' 全期間の ICSI かつ PN=2 の件数を methodPNCounts から合算
+    fertilizedCount = 0
+    For Each item In methodPNCounts
+        uniqueKey = item
+        If Left(uniqueKey, 1) = "2" And InStr(uniqueKey, "_ICSI") > 0 Then
+            fertilizedCount = fertilizedCount + methodPNCounts(item)
+        End If
+    Next item
+    denominator = wsSummary.Cells(baseRow - 1, baseCol + 2).value
+    If IsNumeric(denominator) And denominator <> 0 Then
+     wsSummary.Cells(baseRow, baseCol + 2).NumberFormat = "0.0"
+        wsSummary.Cells(baseRow, baseCol + 2).value = Round(fertilizedCount / denominator * 100, 1)
+        wsSummary.Cells(baseRow, baseCol + 3).value = "'" & fertilizedCount & "/" & denominator
+        fertilizedCountDict("ICSI_Total") = fertilizedCount
+    Else
+        wsSummary.Cells(baseRow, baseCol + 2).value = 0
+        wsSummary.Cells(baseRow, baseCol + 3).value = "'" & fertilizedCount & "/" & denominator
+        fertilizedCountDict("ICSI_Total") = 0
+    End If
+
+    ' 03_IVM-ICSI（全期間）
+    ' 全期間の IVM-ICSI かつ PN=2 の件数を methodPNCounts から合算
+    fertilizedCount = 0
+    For Each item In methodPNCounts
+        uniqueKey = item
+        If Left(uniqueKey, 1) = "2" And InStr(uniqueKey, "_IVM-ICSI") > 0 Then
+            fertilizedCount = fertilizedCount + methodPNCounts(item)
+        End If
+    Next item
+    denominator = wsSummary.Cells(baseRow - 1, baseCol + 4).value
+    If IsNumeric(denominator) And denominator <> 0 Then
+    wsSummary.Cells(baseRow, baseCol + 4).NumberFormat = "0.0"
+    wsSummary.Cells(baseRow, baseCol + 4).value = Round(fertilizedCount / denominator * 100, 1)
+    wsSummary.Cells(baseRow, baseCol + 5).value = "'" & fertilizedCount & "/" & denominator
+        fertilizedCountDict("IVM-ICSI_Total") = fertilizedCount
+    Else
+        wsSummary.Cells(baseRow, baseCol + 4).value = 0
+        wsSummary.Cells(baseRow, baseCol + 5).value = "'" & fertilizedCount & "/" & denominator
+        fertilizedCountDict("IVM-ICSI_Total") = 0
+        
+    End If
+
+    ' 04_C-IVF（各年度、全院、PN=2）
+    ' 年度別に C-IVF かつ PN=2 のデータを集計して出力
+    baseRow = 17
+    baseCol = 4
+    Dim yearItem As Variant
+    Dim yearAggregated As Object
+    Set yearAggregated = CreateObject("Scripting.Dictionary")
+    Dim key As String
+
+    For Each item In methodPNCounts
+        uniqueKey = item
+        If Left(uniqueKey, 1) = "2" And InStr(uniqueKey, "_C-IVF") > 0 Then
+            For i = 1 To Len(uniqueKey) - 3
+                Dim temp As String
+                temp = Mid(uniqueKey, i, 4)
+                If IsNumeric(temp) And Len(temp) = 4 Then
+                    yearcheck = temp
+                    Exit For
+                End If
+            Next i
+            ' 各年度ごとに、院別にPN=2件数を集計・出力
+        For Each yearItem In yearList
+                If yearcheck = yearItem Then
+                    If Not yearAggregated.Exists(yearItem) Then
+                        yearAggregated.Add yearItem, methodPNCounts(item)
+                    Else
+                        yearAggregated(yearItem) = yearAggregated(yearItem) + methodPNCounts(item)
+                    End If
+                End If
+            Next yearItem
+        End If
+    Next item
+
+    For Each yearItem In yearAggregated.keys
+        fertilizedCount = yearAggregated(yearItem)
+        denominator = wsSummary.Cells(baseRow - 1, baseCol).value
+        
+            ' 年度ごとの辞書登録（例：CIVF_2024）
+    key = "C-IVF_" & yearItem
+    fertilizedCountDict(key) = fertilizedCount
+        
+        If IsNumeric(denominator) And denominator <> 0 Then
+         wsSummary.Cells(baseRow, baseCol).NumberFormat = "0.0"
+         wsSummary.Cells(baseRow, baseCol).value = Round(fertilizedCount / denominator * 100, 1)
+         wsSummary.Cells(baseRow, baseCol + 1).value = "'" & fertilizedCount & "/" & denominator
+  
+        Else
+        wsSummary.Cells(baseRow, baseCol).NumberFormat = "0.0"
+        wsSummary.Cells(baseRow, baseCol + 1).value = "'" & fertilizedCount & "/" & denominator
+            wsSummary.Cells(baseRow, baseCol).value = 0
+        End If
+        ' 次の年度の行へ移動（8行ごと）
+        baseRow = baseRow + 8
+    Next yearItem
+
+    ' 05_ICSI（各年度、全院、PN=2）
+    ' 年度ごとに ICSI かつ PN=2 の件数を methodPNCounts から合算
+    ' 年度別に ICSI かつ PN=2 のデータを集計して出力
+    baseRow = 17
+    baseCol = 6
+    Set yearAggregated = CreateObject("Scripting.Dictionary")
+
+    For Each item In methodPNCounts
+        uniqueKey = item
+        If Left(uniqueKey, 1) = "2" And InStr(uniqueKey, "_ICSI") > 0 Then
+            For i = 1 To Len(uniqueKey) - 3
+                Dim tempICSI As String
+                tempICSI = Mid(uniqueKey, i, 4)
+                If IsNumeric(tempICSI) And Len(tempICSI) = 4 Then
+                    yearcheck = tempICSI
+                    Exit For
+                End If
+            Next i
+            For Each yearItem In yearList
+                If yearcheck = yearItem Then
+                    If Not yearAggregated.Exists(yearItem) Then
+                        yearAggregated.Add yearItem, methodPNCounts(item)
+                    Else
+                        yearAggregated(yearItem) = yearAggregated(yearItem) + methodPNCounts(item)
+                    End If
+                End If
+            Next yearItem
+        End If
+    Next item
+
+    For Each yearItem In yearAggregated.keys
+        fertilizedCount = yearAggregated(yearItem)
+        denominator = wsSummary.Cells(baseRow - 1, baseCol).value
+        
+                    ' 年度ごとの辞書登録（例：CIVF_2024）
+    key = "ICSI_" & yearItem
+    fertilizedCountDict(key) = fertilizedCount
+        
+        If IsNumeric(denominator) And denominator <> 0 Then
+        wsSummary.Cells(baseRow, baseCol).NumberFormat = "0.0"
+        wsSummary.Cells(baseRow, baseCol).value = Round(fertilizedCount / denominator * 100, 1)
+        wsSummary.Cells(baseRow, baseCol + 1).value = "'" & fertilizedCount & "/" & denominator
+        Else
+        wsSummary.Cells(baseRow, baseCol).NumberFormat = "0.0"
+        wsSummary.Cells(baseRow, baseCol + 1).value = "'" & fertilizedCount & "/" & denominator
+        wsSummary.Cells(baseRow, baseCol).value = 0
+        End If
+        baseRow = baseRow + 8
+    Next yearItem
+
+    ' 06_IVM-ICSI（各年度、全院、PN=2）
+    ' 年度ごとに IVM-ICSI かつ PN=2 の件数を methodPNCounts から合算
+    ' 年度別に IVM-ICSI かつ PN=2 のデータを集計して出力
+    baseRow = 17
+    baseCol = 8
+    Set yearAggregated = CreateObject("Scripting.Dictionary")
+
+    For Each item In methodPNCounts
+        uniqueKey = item
+        If Left(uniqueKey, 1) = "2" And InStr(uniqueKey, "_IVM-ICSI") > 0 Then
+            For i = 1 To Len(uniqueKey) - 3
+                Dim tempIVM As String
+                tempIVM = Mid(uniqueKey, i, 4)
+                If IsNumeric(tempIVM) And Len(tempIVM) = 4 Then
+                    yearcheck = tempIVM
+                    Exit For
+                End If
+            Next i
+            For Each yearItem In yearList
+                If yearcheck = yearItem Then
+                    If Not yearAggregated.Exists(yearItem) Then
+                        yearAggregated.Add yearItem, methodPNCounts(item)
+                    Else
+                        yearAggregated(yearItem) = yearAggregated(yearItem) + methodPNCounts(item)
+                    End If
+                End If
+            Next yearItem
+        End If
+    Next item
+
+    For Each yearItem In yearAggregated.keys
+        fertilizedCount = yearAggregated(yearItem)
+        denominator = wsSummary.Cells(baseRow - 1, baseCol).value
+        
+                    ' 年度ごとの辞書登録（例：CIVF_2024）
+    key = "IVM-ICSI_" & yearItem
+    fertilizedCountDict(key) = fertilizedCount
+        
+        If IsNumeric(denominator) And denominator <> 0 Then
+        wsSummary.Cells(baseRow, baseCol).NumberFormat = "0.0"
+        wsSummary.Cells(baseRow, baseCol).value = Round(fertilizedCount / denominator * 100, 1)
+        wsSummary.Cells(baseRow, baseCol + 1).value = "'" & fertilizedCount & "/" & denominator
+        Else
+        wsSummary.Cells(baseRow, baseCol).NumberFormat = "0.0"
+        wsSummary.Cells(baseRow, baseCol + 1).value = "'" & fertilizedCount & "/" & denominator
+        wsSummary.Cells(baseRow, baseCol).value = 0
+        End If
+        baseRow = baseRow + 8
+    Next yearItem
+
+    ' 07_各院別（全期間、PN=2、各媒精方法）
+    ' 各媒精方法ごとに院別の PN=2 の合計数から受精率を算出
+    Dim methodList As Variant: methodList = Array("C-IVF", "ICSI", "IVM-ICSI")
+    Dim methodName As Variant
+    Dim clinicItem As Variant
+    Dim clinicAggregated As Object
+
+    ' 07 各媒精方法ごとに、院識別番号ごとの合算値を出力
+    For Each methodName In methodList
+        Set clinicAggregated = CreateObject("Scripting.Dictionary")
+
+        For Each item In methodPNCounts
+            uniqueKey = item
+            If Left(uniqueKey, 1) = "2" And InStr(uniqueKey, "_" & methodName) > 0 Then
+                Dim parts() As String
+                parts = Split(uniqueKey, "_")
+                clinicID = parts(UBound(parts))
+
+                For Each clinicItem In clinicList
+                    If clinicID = clinicItem Then
+                        If Not clinicAggregated.Exists(clinicItem) Then
+                            clinicAggregated.Add clinicItem, methodPNCounts(item)
+                        Else
+                            clinicAggregated(clinicItem) = clinicAggregated(clinicItem) + methodPNCounts(item)
+                        End If
+                    End If
+                Next clinicItem
+            End If
+        Next item
+
+        Select Case methodName
+            Case "C-IVF": baseCol = 13
+            Case "ICSI": baseCol = 15
+            Case "IVM-ICSI": baseCol = 17
+        End Select
+
+        baseRow = 9
+        For Each clinicItem In clinicList
+            fertilizedCount = 0
+            If clinicAggregated.Exists(clinicItem) Then
+                fertilizedCount = clinicAggregated(clinicItem)
+            End If
+            denominator = wsSummary.Cells(baseRow - 1, baseCol).value
+            
+            
+            key = methodName & "_Clinic" & Format(clinicItem, "00")
+            fertilizedCountDict(key) = fertilizedCount
+            
+            
+            If IsNumeric(denominator) And denominator <> 0 Then
+            wsSummary.Cells(baseRow, baseCol).NumberFormat = "0.0"
+            wsSummary.Cells(baseRow, baseCol).value = Round(fertilizedCount / denominator * 100, 1)
+            wsSummary.Cells(baseRow, baseCol + 1).value = "'" & fertilizedCount & "/" & denominator
+            Else
+            wsSummary.Cells(baseRow, baseCol).NumberFormat = "0.0"
+            wsSummary.Cells(baseRow, baseCol + 1).value = "'" & fertilizedCount & "/" & denominator
+            wsSummary.Cells(baseRow, baseCol).value = 0
+            End If
+            baseCol = baseCol + 9
+        Next clinicItem
+    Next methodName
+
+    ' 08_各年度×院別（PN=2、各媒精方法）
+    ' 年度×院の組み合わせごとに PN=2 のデータを媒精方法別に出力
+    Dim yearClinicKey As String
+    
+    Dim startCol As Long
+    valueMatrix = wsSummary.Range(wsSummary.Cells(1, 1), wsSummary.Cells(200, 150)).value
+
+    For Each methodName In methodList
+        Set yearAggregated = CreateObject("Scripting.Dictionary")
+
+        For Each item In methodPNCounts
+            uniqueKey = item
+            If Left(uniqueKey, 1) = "2" And InStr(uniqueKey, "_" & methodName) > 0 Then
+                For i = 1 To Len(uniqueKey) - 3
+                    temp = Mid(uniqueKey, i, 4)
+                    If IsNumeric(temp) And Len(temp) = 4 Then
+                        yearcheck = temp
+                        Exit For
+                    End If
+                Next i
+                parts = Split(uniqueKey, "_")
+                clinicID = parts(UBound(parts))
+
+                For Each yearItem In yearList
+                    If yearcheck = yearItem Then
+                        For Each clinicItem In clinicList
+                            If clinicID = clinicItem Then
+                                yearClinicKey = yearItem & "_" & clinicItem
+                                If Not yearAggregated.Exists(yearClinicKey) Then
+                                    yearAggregated.Add yearClinicKey, methodPNCounts(item)
+                                Else
+                                    yearAggregated(yearClinicKey) = yearAggregated(yearClinicKey) + methodPNCounts(item)
+                                End If
+                            End If
+                        Next clinicItem
+                    End If
+                Next yearItem
+            End If
+        Next item
+
+        baseRow = 17
+        Select Case methodName
+            Case "C-IVF": startCol = 13
+            Case "ICSI": startCol = 15
+            Case "IVM-ICSI": startCol = 17
+        End Select
+
+        For Each yearItem In yearList
+            baseCol = startCol
+            For Each clinicItem In clinicList
+                key = yearItem & "_" & clinicItem
+                fertilizedCount = 0
+                If yearAggregated.Exists(key) Then
+                    fertilizedCount = yearAggregated(key)
+                End If
+                denominator = valueMatrix(baseRow - 1, baseCol)
+                
+                
+                 ' 年度ごとの辞書登録（例：CIVF_2024_Clinic1）
+    
+              key = methodName & "_" & yearItem & "_Clinic" & Format(clinicItem, "00")
+            fertilizedCountDict(key) = fertilizedCount
+
+
+                If IsNumeric(denominator) And denominator <> 0 Then
+                 wsSummary.Cells(baseRow, baseCol).NumberFormat = "0.0"
+                wsSummary.Cells(baseRow, baseCol).value = Round(fertilizedCount / denominator * 100, 1)
+                wsSummary.Cells(baseRow, baseCol + 1).value = "'" & fertilizedCount & "/" & denominator
+                Else
+                 wsSummary.Cells(baseRow, baseCol).NumberFormat = "0.0"
+                 wsSummary.Cells(baseRow, baseCol).value = 0
+                 wsSummary.Cells(baseRow, baseCol + 1).value = "'" & fertilizedCount & "/" & denominator
+                End If
+                baseCol = baseCol + 9
+            Next clinicItem
+            baseRow = baseRow + 8
+        Next yearItem
+    Next methodName
+End Sub
+
+Sub opu05_CountGardnerGrades()
+
+    ' === 他Subで作られたfertilizedCountDictを参照できるようにする ===
+    ' ※モジュールの先頭でPublicに定義されている前提
+    ' Public fertilizedCountDict As Object
+    ' FertilizationSummary_2PN() 側で作成・格納されている必要あり
+
+
+    Dim ws As Worksheet
+    Dim wsOut As Worksheet
+    Dim pt As pivotTable
+    Dim firstRow As Long, lastRow As Long
+    Dim firstCol As Long, lastCol As Long
+    Dim rowMethod As Long, rowGrade As Long, rowYear As Long
+    Dim c As Long, r As Long
+    Dim prevMethod As String
+    Dim method As Variant
+    Dim grade As String, yearValue As String
+    Dim value As Variant
+    Dim prevClinic As String, clinic As Variant
+    Dim prevDay As String, dayLabel As String
+    Dim currentYear As Variant, currentMonth As Variant, yearMonthKey As String
+    Dim yearmonth As Variant, year As Variant, month As Variant
+    Dim yearItem As Variant
+
+    Set yearList = CreateObject("Scripting.Dictionary")
+    Set ActiveMethodGardnerCounts = CreateObject("Scripting.Dictionary")
+    
+
+    ' 集計用ディクショナリ（院識別番号×媒精方法×D5/D6×年月×ガードナー評価）
+    Dim methodGardnerCounts As Object
+    Set methodGardnerCounts = CreateObject("Scripting.Dictionary")
+
+    Set ws = ThisWorkbook.Sheets("S04_凍結時ガードナー")
+    Set pt = ws.PivotTables("P04_凍結時ガードナー")
+    Set wsOut = ThisWorkbook.Sheets("採卵サマリー")
+
+    ' ピボット範囲
+    With pt.TableRange2
+        firstRow = .row
+        lastRow = .Rows.count + .row - 1
+        firstCol = .Column
+        lastCol = .Columns.count + .Column - 1
+    End With
+
+    ' 各階層の行番号
+    rowClinicID = firstRow + 1 ' 院識別番号
+    rowMethod = firstRow + 2   ' 媒精方法
+    rowBLDay = firstRow + 3    ' D5/D6
+    rowGrade = firstRow + 4    ' ガードナー評価
+    rowYear = firstRow + 5     ' 採卵年月
+    Dim dataStartRow As Long: dataStartRow = rowYear ' データ本体の開始行
+
+    ' データ列の開始列
+    Dim firstDataCol As Long: firstDataCol = firstCol + 1
+
+    ' データ集計
+    For r = dataStartRow To lastRow - 1 ' 最終行（総計）は除外
+        yearmonth = ws.Cells(r, firstCol).value
+        If IsNumeric(yearmonth) Then
+            year = yearmonth
+        Else
+            month = yearmonth
+            yearMonthKey = year & "_" & month
+
+            For c = firstDataCol To lastCol
+                If ws.Cells(rowMethod, c).value <> "" Then prevMethod = Trim(ws.Cells(rowMethod, c).value)
+                method = prevMethod
+
+                If ws.Cells(rowClinicID, c).value <> "" Then prevClinic = Trim(ws.Cells(rowClinicID, c).value)
+                clinic = prevClinic
+
+                If ws.Cells(rowBLDay, c).value <> "" Then prevDay = Trim(ws.Cells(rowBLDay, c).value)
+                dayLabel = prevDay
+
+                grade = ws.Cells(rowGrade, c).value
+                value = ws.Cells(r, c).value
+
+                If method <> "" And clinic <> "" And dayLabel <> "" And grade <> "" And IsNumeric(value) Then
+                    Dim uniqueKey As String
+                    uniqueKey = clinic & "_" & method & "_" & dayLabel & "_" & yearMonthKey & "_" & grade
+
+                    If Not methodGardnerCounts.Exists(uniqueKey) Then
+                        methodGardnerCounts.Add uniqueKey, value
+                    Else
+                        methodGardnerCounts(uniqueKey) = methodGardnerCounts(uniqueKey) + value
+                    End If
+                End If
+            Next c
+        End If
+    Next r
+
+   Dim getyearList As Variant
+    ' 年度リストを作成
+    getyearList = GetYearsFromPivotTable()
+    ' 年度リストを作成（IndentLevel = 0 のセルのみ追加）
+    For i = UBound(getyearList) To LBound(getyearList) Step -1
+        If Not yearList.Exists(getyearList(i)) Then
+            yearList.Add getyearList(i), True
+        End If
+    Next i
+    
+'   yearList = yearDict.keys ' Dictionary → 配列へ変換
+
+
+
+'    ' === ユニークキーから年度を抽出して yearList を構築 ===
+'    Dim k As Variant
+'    Dim parts() As String
+'    For Each k In methodGardnerCounts.keys
+'        parts = Split(k, "_")
+'        If UBound(parts) >= 4 Then
+'            Dim y As String
+'            y = parts(3)
+'            If IsNumeric(y) Then
+'                If Not yearList.Exists(y) Then yearList.Add y, True
+'            End If
+'        End If
+'    Next k
+
+    ' 院マップと識別番号でソートされた院名リストを取得
+    Dim hospitalMap As Object
+    Set hospitalMap = GetHospitalMap()
+    sortedHospitals = SortKeysByValue(hospitalMap)
+    
+    ' === 院識別番号一覧を取得 ===
+    Dim clinicList As Object
+    Set clinicList = CreateObject("Scripting.Dictionary")
+    
+For i = LBound(sortedHospitals) To UBound(sortedHospitals)
+    Dim code As String
+    code = i + 1 ' "1", "2", ...
+    
+    If Not clinicList.Exists(code) Then
+        clinicList.Add code, True
+    End If
+Next i
+
+'    ' === 院識別番号一覧を methodGardnerCounts から自動抽出 ===
+'    Dim clinicList As Object
+'    Set clinicList = CreateObject("Scripting.Dictionary")
+'    For Each k In methodGardnerCounts.keys
+'        parts = Split(k, "_")
+'        If Not clinicList.Exists(parts(0)) Then clinicList.Add parts(0), True
+'    Next k
+
+    ' === 各院別 × 媒精方法の合計値を「採卵サマリー」シートに出力 ===
+
+    ' === 各年度 × 院別 × 媒精方法の合算値をJ19起点で出力 ===
+    Dim yearClinicSumDict As Object
+    Set yearClinicSumDict = CreateObject("Scripting.Dictionary")
+
+    For Each method In Array("C-IVF", "ICSI", "IVM-ICSI")
+        For Each k In methodGardnerCounts.keys
+            If InStr(k, method) > 0 Then
+                parts = Split(k, "_")
+                If UBound(parts) >= 4 Then
+                    Dim gClinic As String: gClinic = parts(0)
+                    Dim gYear As String: gYear = parts(3)
+
+                    If yearList.Exists(gYear) And clinicList.Exists(gClinic) Then
+                        Dim yckey As String: yckey = gYear & "_" & Format(gClinic, "00") & "_" & method
+                        If yearClinicSumDict.Exists(yckey) Then
+                            yearClinicSumDict(yckey) = yearClinicSumDict(yckey) + methodGardnerCounts(k)
+                        Else
+                            yearClinicSumDict.Add yckey, methodGardnerCounts(k)
+                        End If
+                    End If
+                End If
+            End If
+        Next k
+
+        ' 出力位置：J19 起点 胚盤胞凍結率/2PN率 各年度×各院
+        Dim outputRow As Long: outputRow = 19
+        Select Case method
+            Case "C-IVF": baseCol = 13
+            Case "ICSI": baseCol = 15
+            Case "IVM-ICSI": baseCol = 17
+        End Select
+
+        For Each yearItem In yearList.keys
+            baseCol = IIf(method = "C-IVF", 13, IIf(method = "ICSI", 15, 17))
+            For Each clinicItem In clinicList.keys
+                Dim outKey As String: outKey = yearItem & "_" & Format(clinicItem, "00") & "_" & method
+                Dim methodClinicKey As String: methodClinicKey = method & "_" & yearItem & "_Clinic" & Format(clinicItem, "00")
+
+                If yearClinicSumDict.Exists(outKey) And fertilizedCountDict.Exists(methodClinicKey) And fertilizedCountDict(methodClinicKey) <> 0 Then
+                    wsOut.Cells(outputRow, baseCol).NumberFormat = "0.0"
+                    wsOut.Cells(outputRow, baseCol).value = Format((yearClinicSumDict(outKey) / fertilizedCountDict(methodClinicKey)) * 100, "0.0")
+                    wsOut.Cells(outputRow, baseCol + 1).value = "'" & yearClinicSumDict(outKey) & "/" & fertilizedCountDict(methodClinicKey)
+                    
+    ' 分子をActiveMethodGardnerCountsにも格納
+    If Not ActiveMethodGardnerCounts Is Nothing Then
+        ActiveMethodGardnerCounts(outKey) = yearClinicSumDict(outKey)
+    End If
+            
+            ActiveMethodGardnerCounts(outKey) = yearClinicSumDict(outKey)
+                    
+                Else
+                
+        If Not ActiveMethodGardnerCounts Is Nothing Then
+        ActiveMethodGardnerCounts(outKey) = 0
+    End If
+                    wsOut.Cells(outputRow, baseCol).NumberFormat = "0.0"
+                    wsOut.Cells(outputRow, baseCol).value = Format(0, "0.0")
+                    wsOut.Cells(outputRow, baseCol + 1).value = "'" & "0/" & fertilizedCountDict(methodClinicKey)
+                End If
+                baseCol = baseCol + 9
+            Next clinicItem
+            outputRow = outputRow + 8
+        Next yearItem
+    Next method
+
+    Dim methodClinicTotal As Object
+    Dim baseRow As Long
+    For Each method In Array("C-IVF", "ICSI", "IVM-ICSI")
+        Set methodClinicTotal = CreateObject("Scripting.Dictionary")
+        For Each k In methodGardnerCounts.keys
+            If InStr(k, method) > 0 Then
+                parts = Split(k, "_")
+                clinic = parts(0)
+                If methodClinicTotal.Exists(clinic) Then
+                    methodClinicTotal(clinic) = methodClinicTotal(clinic) + methodGardnerCounts(k)
+                Else
+                    methodClinicTotal.Add clinic, methodGardnerCounts(k)
+                End If
+            End If
+        Next k
+
+        ' 出力開始位置（J11から開始）胚盤胞凍結率/2PN率　全期間×各院
+        Select Case method
+            Case "C-IVF": baseCol = 13
+            Case "ICSI": baseCol = 15
+            Case "IVM-ICSI": baseCol = 17
+        End Select
+        baseRow = 11
+
+        ' 院ごとに右に6列ずつ出力
+        For Each clinic In clinicList.keys
+            ' 分子・分母がそろっていれば割合を計算して出力
+           
+            methodClinicKey = method & "_Clinic" & Format(clinic, "00")
+            If methodClinicTotal.Exists(clinic) And fertilizedCountDict.Exists(methodClinicKey) And fertilizedCountDict(methodClinicKey) <> 0 Then
+            
+                            ' 分子をActiveMethodGardnerCountsにも格納
+    If Not ActiveMethodGardnerCounts Is Nothing Then
+        ActiveMethodGardnerCounts(methodClinicKey) = methodClinicTotal(methodClinicKey)
+    End If
+            
+            ActiveMethodGardnerCounts(methodClinicKey) = methodClinicTotal(clinic)
+            
+                wsOut.Cells(baseRow, baseCol).NumberFormat = "0.0"
+                wsOut.Cells(baseRow, baseCol).value = Format((methodClinicTotal(clinic) / fertilizedCountDict(methodClinicKey)) * 100, "0.0")
+                wsOut.Cells(baseRow, baseCol + 1).value = "'" & methodClinicTotal(clinic) & "/" & fertilizedCountDict(methodClinicKey)
+            Else
+            
+        If Not ActiveMethodGardnerCounts Is Nothing Then
+        ActiveMethodGardnerCounts(methodClinicKey) = 0
+    End If
+                wsOut.Cells(baseRow, baseCol).NumberFormat = "0.0"
+                wsOut.Cells(baseRow, baseCol).value = Format(0, "0.0")
+                wsOut.Cells(baseRow, baseCol + 1).value = "'" & "0/" & fertilizedCountDict(methodClinicKey)
+            End If
+            baseCol = baseCol + 9
+        Next clinic
+    Next method
+
+' === 各年度 × 媒精方法ごとの合計値を記録する辞書 ===
+    Dim yearlyMethodTotalDict As Object
+    Set yearlyMethodTotalDict = CreateObject("Scripting.Dictionary")
+
+    Dim methodKey As String
+    For Each k In methodGardnerCounts.keys
+        parts = Split(k, "_")
+        If UBound(parts) >= 4 Then
+            Dim yr As String: yr = parts(3)
+            If InStr(k, "_C-IVF") > 0 Then
+                methodKey = "C-IVF_" & yr
+            ElseIf InStr(k, "_IVM-ICSI") > 0 Then
+                methodKey = "IVM-ICSI_" & yr
+            ElseIf InStr(k, "_ICSI") > 0 And InStr(k, "IVM-ICSI") = 0 Then
+                methodKey = "ICSI_" & yr
+            Else
+                methodKey = ""
+            End If
+
+            If methodKey <> "" Then
+                If yearlyMethodTotalDict.Exists(methodKey) Then
+                    yearlyMethodTotalDict(methodKey) = yearlyMethodTotalDict(methodKey) + methodGardnerCounts(k)
+                Else
+                    yearlyMethodTotalDict.Add methodKey, methodGardnerCounts(k)
+                End If
+            End If
+        End If
+    Next k
+
+' === 全期間 × 媒精方法ごとの合計値を記録する辞書 ===
+    Dim methodTotalDict As Object
+    Set methodTotalDict = CreateObject("Scripting.Dictionary")
+
+    For Each k In methodGardnerCounts.keys
+        parts = Split(k, "_")
+        If UBound(parts) >= 4 Then
+            If InStr(k, "_C-IVF") > 0 Then
+                method = "C-IVF"
+            ElseIf InStr(k, "_IVM-ICSI") > 0 Then
+                method = "IVM-ICSI"
+            ElseIf InStr(k, "_ICSI") > 0 And InStr(k, "IVM-ICSI") = 0 Then
+                method = "ICSI"
+            Else
+                method = ""
+            End If
+
+            If method <> "" Then
+                If methodTotalDict.Exists(method) Then
+                    methodTotalDict(method) = methodTotalDict(method) + methodGardnerCounts(k)
+                Else
+                    methodTotalDict.Add method, methodGardnerCounts(k)
+                End If
+            End If
+        End If
+    Next k
+
+' === 年度ごとの割合を「採卵サマリー」シートに出力 ===
+    
+    Dim baseCell As Range
+    Dim fertKey As String
+    
+
+    Dim rowOffset As Long: rowOffset = 0
+    For Each yearItem In yearList.keys
+        Set baseCell = wsOut.Range("D19").offset(rowOffset, 0)
+        For Each method In Array("C-IVF", "ICSI", "IVM-ICSI")
+            ' 年度ごとの分子キーを生成
+            Select Case method
+                Case "C-IVF": ymKey = "C-IVF_" & yearItem
+                Case "ICSI": ymKey = "ICSI_" & yearItem
+                Case "IVM-ICSI": ymKey = "IVM-ICSI_" & yearItem
+            End Select
+
+            ' 分母のキー
+            fertKey = ymKey
+
+            ' 分子・分母がそろっていれば割合を出力
+            If yearlyMethodTotalDict.Exists(ymKey) And fertilizedCountDict.Exists(fertKey) And fertilizedCountDict(fertKey) <> 0 Then
+            
+                ' 分子をActiveMethodGardnerCountsにも格納
+    If Not ActiveMethodGardnerCounts Is Nothing Then
+        ActiveMethodGardnerCounts(ymKey) = yearlyMethodTotalDict(ymKey)
+    End If
+            
+                baseCell.NumberFormat = "0.0"
+                baseCell.value = Format((yearlyMethodTotalDict(ymKey) / fertilizedCountDict(fertKey)) * 100, "0.0")
+                baseCell.offset(0, 1).value = "'" & yearlyMethodTotalDict(ymKey) & "/" & fertilizedCountDict(fertKey)
+            Else
+            
+               ' 分子が存在しないまたは分母が0でも0として格納
+    If Not ActiveMethodGardnerCounts Is Nothing Then
+        ActiveMethodGardnerCounts(ymKey) = 0
+    End If
+                baseCell.NumberFormat = "0.0"
+                baseCell.value = Format(0, "0.0")
+                baseCell.offset(0, 1).value = "'" & yearlyMethodTotalDict(ymKey) & "/" & fertilizedCountDict(fertKey)
+            End If
+
+            Set baseCell = baseCell.offset(0, 2)
+        Next method
+        rowOffset = rowOffset + 8
+    Next yearItem
+
+' === 全期間の割合を「採卵サマリー」シートに出力 ===
+Dim StopstoreKey As String
+
+    Set baseCell = wsOut.Range("D11")
+    For Each method In Array("C-IVF", "ICSI", "IVM-ICSI")
+    StopstoreKey = "All_" & method
+        ' 分子のキー
+        Dim methodKeyTotal As String
+        Select Case method
+        Case "C-IVF": methodKeyTotal = "C-IVF_Total"
+            Case "ICSI": methodKeyTotal = "ICSI_Total"
+            Case "IVM-ICSI": methodKeyTotal = "IVM-ICSI_Total"
+        End Select
+
+        If methodTotalDict.Exists(method) And fertilizedCountDict.Exists(methodKeyTotal) And fertilizedCountDict(methodKeyTotal) <> 0 Then
+            baseCell.NumberFormat = "0.0"
+        baseCell.value = Format((methodTotalDict(method) / fertilizedCountDict(methodKeyTotal)) * 100, "0.0")
+        baseCell.offset(0, 1).value = "'" & methodTotalDict(method) & "/" & fertilizedCountDict(methodKeyTotal)
+        
+          If Not ActiveMethodGardnerCounts Is Nothing Then
+        ActiveMethodGardnerCounts(StopstoreKey) = methodTotalDict(method)
+    End If
+        
+        Else
+            baseCell.value = Format(0, "0.0")
+            baseCell.offset(0, 1).value = "'" & methodTotalDict(method) & "/" & fertilizedCountDict(methodKeyTotal)
+            If Not ActiveMethodGardnerCounts Is Nothing Then
+        ActiveMethodGardnerCounts(StopstoreKey) = 0
+    End If
+            
+        End If
+        Set baseCell = baseCell.offset(0, 2)
+    Next method
+
+End Sub
+Sub opu06_STOP_CountGardnerGrades()
+   
+    Dim ws As Worksheet
+    Set ws = ThisWorkbook.Sheets("採卵サマリー")
+
+    Dim StopmethodGardnerCounts As Object
+    Set StopmethodGardnerCounts = CreateObject("Scripting.Dictionary")
+
+    Dim wsStop As Worksheet
+    Dim ptStop As pivotTable
+    Set wsStop = ThisWorkbook.Sheets("S05_培養中止時ガードナー")
+    Set ptStop = wsStop.PivotTables("P05_培養中止時ガードナー")
+
+    Dim firstRowStop As Long, lastRowStop As Long
+    Dim firstColStop As Long, lastColStop As Long
+    With ptStop.TableRange2
+        firstRowStop = .row
+        lastRowStop = .row + .Rows.count - 1
+        firstColStop = .Column
+        lastColStop = .Column + .Columns.count - 1
+    End With
+
+    Dim rowClinicIDStop As Long, rowMethodStop As Long, rowGradeStop As Long, rowYearStop As Long
+    rowClinicIDStop = firstRowStop + 1
+    rowMethodStop = firstRowStop + 2
+    rowGradeStop = firstRowStop + 3
+    rowYearStop = firstRowStop + 4
+    Dim dataStartRowStop As Long: dataStartRowStop = rowYearStop
+    Dim firstDataColStop As Long: firstDataColStop = firstColStop + 1
+
+    Dim year As String, month As String, yearMonthKey As String
+    Dim r As Long, c As Long
+    Dim clinic As String, method As Variant, dayLabel As String, grade As String
+    Dim prevClinic As String, prevMethod As String
+    Dim value As Variant
+
+    For r = dataStartRowStop To lastRowStop - 1
+        Dim yearmonth As Variant
+        yearmonth = wsStop.Cells(r, firstColStop).value
+
+        If IsNumeric(yearmonth) Then
+            year = yearmonth
+        Else
+            month = yearmonth
+            yearMonthKey = year & "_" & month
+
+            For c = firstDataColStop To lastColStop
+                If wsStop.Cells(rowMethodStop, c).value <> "" Then prevMethod = Trim(wsStop.Cells(rowMethodStop, c).value)
+                method = prevMethod
+
+                If wsStop.Cells(rowClinicIDStop, c).value <> "" Then prevClinic = Trim(wsStop.Cells(rowClinicIDStop, c).value)
+                clinic = prevClinic
+
+                dayLabel = "Stop"
+                grade = wsStop.Cells(rowGradeStop, c).value
+                value = wsStop.Cells(r, c).value
+
+                If method <> "" And clinic <> "" And grade <> "" And IsNumeric(value) Then
+                    Dim uniqueKey As String
+                    uniqueKey = clinic & "_" & method & "_" & dayLabel & "_" & yearMonthKey & "_" & grade
+
+                    If Not StopmethodGardnerCounts.Exists(uniqueKey) Then
+                        StopmethodGardnerCounts.Add uniqueKey, value
+                    Else
+                        StopmethodGardnerCounts(uniqueKey) = StopmethodGardnerCounts(uniqueKey) + value
+                    End If
+                End If
+            Next c
+        End If
+    Next r
+
+    Dim yearList As Object, clinicList As Object
+    Set yearList = CreateObject("Scripting.Dictionary")
+    Set clinicList = CreateObject("Scripting.Dictionary")
+
+    Dim StopClinicMethodCounts As Object
+    Set StopClinicMethodCounts = CreateObject("Scripting.Dictionary")
+
+    For Each k In StopmethodGardnerCounts.keys
+        Dim parts: parts = Split(k, "_")
+        Dim summaryKey As String
+        summaryKey = parts(0) & "_" & parts(1) & "_" & parts(2) & "_" & parts(3)
+
+        If Not StopClinicMethodCounts.Exists(summaryKey) Then
+            StopClinicMethodCounts.Add summaryKey, StopmethodGardnerCounts(k)
+        Else
+            StopClinicMethodCounts(summaryKey) = StopClinicMethodCounts(summaryKey) + StopmethodGardnerCounts(k)
+        End If
+
+'        Dim yearItem As Variant: yearItem = Split(parts(3), "_")(0)
+'        If Not yearList.Exists(yearItem) Then yearList.Add yearItem, Nothing
+'        If Not clinicList.Exists(parts(0)) Then clinicList.Add parts(0), Nothing
+    Next k
+
+'    ' 年度降順、院番号昇順にソート
+'    Dim sortedYears() As String
+'    Dim sortedClinics() As String
+'    Dim idx As Long
+'
+'    ReDim sortedYears(yearList.Count - 1)
+'    idx = 0
+'    For Each yearItem In yearList.keys
+'        sortedYears(idx) = yearItem
+'        idx = idx + 1
+'    Next
+'
+'    ReDim sortedClinics(clinicList.Count - 1)
+'    idx = 0
+'    For Each clinicItem In clinicList.keys
+'        sortedClinics(idx) = clinicItem
+'        idx = idx + 1
+'    Next
+'
+'    Call BubbleSortDescending(sortedYears)
+'    Call BubbleSortAscending(sortedClinics)
+    
+    Dim sortedYears() As Variant
+    Dim sortedClinics() As Variant
+    Dim getyearList As Variant
+    Dim i As Long
+    Dim tmp_sortedYears As Object
+    Set tmp_sortedYears = CreateObject("Scripting.Dictionary")
+
+    
+    ' 年度リストを作成
+    getyearList = GetYearsFromPivotTable()
+    ' 年度リストを作成（IndentLevel = 0 のセルのみ追加）
+    For i = UBound(getyearList) To LBound(getyearList) Step -1
+        If Not yearList.Exists(getyearList(i)) Then
+            tmp_sortedYears.Add getyearList(i), True
+        End If
+    Next i
+    
+    sortedYears() = tmp_sortedYears.keys ' Dictionary → 配列へ変換
+    
+  ' 院マップと識別番号でソートされた院名リストを取得
+    Dim hospitalMap As Object
+    Set hospitalMap = GetHospitalMap()
+    sortedHospitals = SortKeysByValue(hospitalMap)
+    
+    ' === 院識別番号一覧を取得 ===
+    Dim tmp_clinicList As Object
+    Set tmp_clinicList = CreateObject("Scripting.Dictionary")
+    
+For i = LBound(sortedHospitals) To UBound(sortedHospitals)
+    Dim code As String
+    code = i + 1 ' "1", "2", ...
+    
+    If Not tmp_clinicList.Exists(code) Then
+        tmp_clinicList.Add code, True
+    End If
+Next i
+
+     sortedClinics() = tmp_clinicList.keys ' Dictionary → 配列へ変換
+    
+
+    Dim baseRow As Long: baseRow = 18
+    Dim baseCol As Long: baseCol = 13
+
+    Dim j As Long
+    For i = 0 To UBound(sortedYears)
+        For j = 0 To UBound(sortedClinics)
+            For Each method In Array("C-IVF", "ICSI", "IVM-ICSI")
+                Dim outputRow As Long: outputRow = baseRow + (i * 8)
+'                Dim outputCol As Long: outputCol = baseCol + (j * 6) + Application.Match(method, Array("C-IVF", "ICSI", "IVM-ICSI"), 0) - 1
+Select Case method
+    Case "C-IVF": offset = 0
+    Case "ICSI": offset = 2
+    Case "IVM-ICSI": offset = 4
+End Select
+
+outputCol = baseCol + (j * 9) + offset
+
+                
+                summaryKey = sortedClinics(j) & "_" & method & "_Stop_" & sortedYears(i)
+                Dim methodClinicKey As String
+                methodClinicKey = sortedYears(i) & "_" & Format(sortedClinics(j), "00") & "_" & method
+                Dim fertKey As String
+                fertKey = method & "_" & sortedYears(i) & "_Clinic" & Format(sortedClinics(j), "00")
+
+                Dim result As String: result = "0.0"
+                Dim mresult As String: mresult = 0
+                If Not fertilizedCountDict Is Nothing And fertilizedCountDict.Exists(fertKey) Then
+                    Dim fertilizedCount As Double: fertilizedCount = fertilizedCountDict(fertKey)
+                    If fertilizedCount <> 0 Then
+                        Dim activeCount As Double: activeCount = 0
+                        If ActiveMethodGardnerCounts.Exists(methodClinicKey) Then activeCount = ActiveMethodGardnerCounts(methodClinicKey)
+                        Dim stopCount As Double: stopCount = 0
+                        If StopClinicMethodCounts.Exists(summaryKey) Then stopCount = StopClinicMethodCounts(summaryKey)
+                        result = Format(((activeCount + stopCount) / fertilizedCount) * 100, "0.0")
+                        mresult = activeCount + stopCount
+                    End If
+                End If
+                ws.Cells(outputRow, outputCol).NumberFormat = "0.0"
+                ws.Cells(outputRow, outputCol).value = result
+                ws.Cells(outputRow, outputCol + 1).value = "'" & mresult & "/" & fertilizedCount
+            Next method
+        Next j
+    Next i
+
+    ' 以下そのまま
+    Set wsOut = ThisWorkbook.Sheets("採卵サマリー")
+    Dim baseCell As Range
+    Set baseCell = wsOut.Range("D10")
+    
+
+    Dim methodName As Variant
+    Dim totalByMethod As Double
+    For Each methodName In Array("C-IVF", "ICSI", "IVM-ICSI")
+        totalByMethod = 0
+        For Each k In StopClinicMethodCounts.keys
+            If InStr(k, methodName & "_Stop") > 0 Then
+                totalByMethod = totalByMethod + StopClinicMethodCounts(k)
+            End If
+        Next k
+
+        Dim activeKey As String: activeKey = "All_" & methodName
+        fertKey = methodName & "_Total"
+
+        If Not ActiveMethodGardnerCounts Is Nothing And Not fertilizedCountDict Is Nothing Then
+            If ActiveMethodGardnerCounts.Exists(activeKey) And fertilizedCountDict.Exists(fertKey) And fertilizedCountDict(fertKey) <> 0 Then
+                Dim totalCombined As Double
+                totalCombined = totalByMethod + ActiveMethodGardnerCounts(activeKey)
+                baseCell.NumberFormat = "0.0"
+                baseCell.value = (totalCombined / fertilizedCountDict(fertKey)) * 100
+                baseCell.offset(0, 1).value = "'" & totalCombined & "/" & fertilizedCountDict(fertKey)
+            Else
+                baseCell.value = "-"
+            End If
+        Else
+            baseCell.value = "(Err)"
+        End If
+        Set baseCell = baseCell.offset(0, 2)
+    Next methodName
+
+    Dim totalSum As Double: totalSum = 0
+    For Each k In StopClinicMethodCounts.keys
+        totalSum = totalSum + StopClinicMethodCounts(k)
+    Next k
+    
+    
+        ' === 各院×全期間×媒精法の出力（J10を基準） ===
+    Dim totalRow As Long: totalRow = 10 ' J10行
+    Dim totalColBase As Long: totalColBase = 13 ' J列（C-IVF）
+
+    For j = 0 To UBound(sortedClinics)
+        For Each method In Array("C-IVF", "ICSI", "IVM-ICSI")
+            outputCol = 0 ' 初期化
+'            outputCol = totalColBase + (j * 9) + Application.Match(method, Array("C-IVF", "ICSI", "IVM-ICSI"), 0) - 1
+Select Case method
+    Case "C-IVF": offset = 0
+    Case "ICSI": offset = 2
+    Case "IVM-ICSI": offset = 4
+End Select
+
+outputCol = totalColBase + (j * 9) + offset
+            
+'            methodClinicKey = "All_" & Format(sortedClinics(j), "00") & "_" & method
+            methodClinicKey = method & "_Clinic" & Format(sortedClinics(j), "00")
+           
+            fertKey = method & "_Clinic" & Format(sortedClinics(j), "00")
+            mresult = 0
+             result = "0.0"
+            If Not fertilizedCountDict Is Nothing And fertilizedCountDict.Exists(fertKey) Then
+                fertilizedCount = fertilizedCountDict(fertKey)
+                If fertilizedCount <> 0 Then
+                   activeCount = 0
+                    If ActiveMethodGardnerCounts.Exists(methodClinicKey) Then activeCount = ActiveMethodGardnerCounts(methodClinicKey)
+                    stopCount = 0
+
+                    ' Stop全期間の合計を集計
+                    For Each k In StopClinicMethodCounts.keys
+                        If k Like sortedClinics(j) & "_" & method & "_Stop_*" Then
+                            stopCount = stopCount + StopClinicMethodCounts(k)
+                        End If
+                    Next k
+                    mresult = activeCount + stopCount
+                    result = Format(((activeCount + stopCount) / fertilizedCount) * 100, "0.0")
+                End If
+            End If
+
+            ws.Cells(totalRow, outputCol).NumberFormat = "0.0"
+            ws.Cells(totalRow, outputCol).value = result
+            ws.Cells(totalRow, outputCol + 1).value = "'" & mresult & "/" & fertilizedCount
+        Next method
+    Next j
+    
+    
+        ' === 全院×年度ごとの出力（D18を基準） ===
+    Dim yearBaseRow As Long: yearBaseRow = 18 ' D18
+    Dim yearBaseCol As Long: yearBaseCol = 4 ' D列
+
+    For i = 0 To UBound(sortedYears)
+        For Each method In Array("C-IVF", "ICSI", "IVM-ICSI")
+            Dim yearOutputRow As Long: yearOutputRow = yearBaseRow + (i * 8)
+'            Dim yearOutputCol As Long: yearOutputCol = yearBaseCol + Application.Match(method, Array("C-IVF", "ICSI", "IVM-ICSI"), 0) - 1
+Select Case method
+    Case "C-IVF": offset = 0
+    Case "ICSI": offset = 2
+    Case "IVM-ICSI": offset = 4
+End Select
+
+yearOutputCol = yearBaseCol + offset
+     
+            fertKey = method & "_" & sortedYears(i)
+
+   
+            methodClinicKey = method & "_" & sortedYears(i)
+            mresult = 0
+            result = "0.0"
+            If Not fertilizedCountDict Is Nothing And fertilizedCountDict.Exists(fertKey) Then
+              fertilizedCount = fertilizedCountDict(fertKey)
+                If fertilizedCount <> 0 Then
+                 activeCount = 0
+                    If ActiveMethodGardnerCounts.Exists(methodClinicKey) Then activeCount = ActiveMethodGardnerCounts(methodClinicKey)
+
+                 stopCount = 0
+                    For Each k In StopClinicMethodCounts.keys
+                        If k Like "*_" & method & "_Stop_" & sortedYears(i) Then
+                            stopCount = stopCount + StopClinicMethodCounts(k)
+                        End If
+                    Next k
+                    mresult = activeCount + stopCount
+                    result = Format(((activeCount + stopCount) / fertilizedCount) * 100, "0.0")
+                End If
+            End If
+
+            ws.Cells(yearOutputRow, yearOutputCol).NumberFormat = "0.0"
+            ws.Cells(yearOutputRow, yearOutputCol).value = result
+            ws.Cells(yearOutputRow, yearOutputCol + 1).value = "'" & mresult & "/" & fertilizedCount
+        Next method
+    Next i
+    
+    
+    
+    
+
+End Sub
+
+Sub BubbleSortDescending(arr() As String)
+    Dim i As Long, j As Long
+    For i = LBound(arr) To UBound(arr) - 1
+        For j = i + 1 To UBound(arr)
+            If CLng(arr(i)) < CLng(arr(j)) Then
+                Dim tmp As String
+                tmp = arr(i)
+                arr(i) = arr(j)
+                arr(j) = tmp
+            End If
+        Next j
+    Next i
+End Sub
+
+Sub BubbleSortAscending(arr() As String)
+    Dim i As Long, j As Long
+    For i = LBound(arr) To UBound(arr) - 1
+        For j = i + 1 To UBound(arr)
+            If CLng(arr(i)) > CLng(arr(j)) Then
+                Dim tmp As String
+                tmp = arr(i)
+                arr(i) = arr(j)
+                arr(j) = tmp
+            End If
+        Next j
+    Next i
+End Sub
+
+Function GetYearsFromPivotTable() As Variant
+    Dim ws As Worksheet
+    Dim pt As pivotTable
+    Dim rng As Range
+    Dim cell As Range
+    Dim dict As Object
+
+    Set ws = ThisWorkbook.Sheets("S01_総採卵件数")
+    Set pt = ws.PivotTables("P01_総採卵件数")
+    Set rng = pt.RowRange
+    Set dict = CreateObject("Scripting.Dictionary")
+
+    For Each cell In rng.Cells
+        If cell.IndentLevel = 0 Then
+            If IsNumeric(cell.value) And Not dict.Exists(cell.value) Then
+                dict.Add cell.value, True
+            End If
+        End If
+    Next cell
+
+    If dict.count > 0 Then
+        GetYearsFromPivotTable = dict.keys
+    Else
+        GetYearsFromPivotTable = Array()
+    End If
+End Function
+
