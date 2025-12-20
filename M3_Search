@@ -1,0 +1,89 @@
+' シートへ移動するボタンを作製するマクロです
+
+Sub SearchClinicYear_Generic(sheetName As String)
+
+    Dim ws As Worksheet
+    Set ws = ThisWorkbook.Sheets(sheetName)
+
+    Dim target1 As String, target2 As String
+    target1 = Trim(ws.Range("F3").value)
+    target2 = Trim(ws.Range("G3").value)
+
+    If target1 = "" Or target2 = "" Then
+        MsgBox "検索条件を入力してください", vbExclamation
+        Exit Sub
+    End If
+
+    Dim r As Long, c As Long
+    Dim lastRow As Long, lastCol As Long
+
+    lastRow = ws.Cells.Find("*", , , , xlByRows, xlPrevious).row
+    lastCol = ws.Cells.Find("*", , , , xlByColumns, xlPrevious).Column
+
+For r = 1 To lastRow
+    If r = 3 Then GoTo SkipRow ' ← 検索のある行（例：3行目）をスキップ
+
+    For c = 1 To lastCol - 1
+If Trim(ws.Cells(r, c).value) <> "" And Trim(ws.Cells(r, c + 1).value) <> "" Then
+    If (InStr(Trim(ws.Cells(r, c).value), target1) > 0 Or InStr(target1, Trim(ws.Cells(r, c).value)) > 0) And _
+       (InStr(Trim(ws.Cells(r, c + 1).value), target2) > 0 Or InStr(target2, Trim(ws.Cells(r, c + 1).value)) > 0) Then
+
+        ws.Activate
+        Application.Goto ws.Cells(r, c), True
+        ActiveWindow.ScrollRow = Application.Max(1, r - 2)
+        ActiveWindow.ScrollColumn = Application.Max(1, c - 2)
+
+'        MsgBox "一致するデータが見つかりました（行 " & r & "、列 " & c & "）", vbInformation
+        Exit Sub
+    End If
+End If
+
+    Next c
+
+SkipRow:
+Next r
+
+    MsgBox "一致する組み合わせは見つかりませんでした", vbExclamation
+    
+    
+End Sub
+
+Public Sub Search_Sheet1()
+    SearchClinicYear_Generic "移植サマリー"
+End Sub
+
+Public Sub Search_Sheet2()
+    SearchClinicYear_Generic "採卵サマリー"
+End Sub
+
+Public Sub GoToA1(sheetName As String)
+
+    Dim ws As Worksheet
+    Set ws = ThisWorkbook.Sheets(sheetName)
+
+    ws.Activate
+    ws.Range("A1").Select
+    
+End Sub
+
+Public Sub GoToA1_Sheet1()
+    GoToA1 "移植サマリー"
+End Sub
+
+Public Sub GoToA1_Sheet2()
+    GoToA1 "採卵サマリー"
+End Sub
+
+Sub GoBackHome()
+    ThisWorkbook.Sheets("操作画面").Activate
+End Sub
+
+' 採卵_月別レポートシートへ移動する
+Sub GoTo_OPU_Monthly()
+    Sheets("採卵_月別レポート").Activate
+End Sub
+' 移植_月別レポートシートへ移動する
+Sub GoTo_ET_Monthly()
+    Sheets("移植_月別レポート").Activate
+End Sub
+
