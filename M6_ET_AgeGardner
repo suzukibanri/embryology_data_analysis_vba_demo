@@ -1,0 +1,1331 @@
+' 年齢別に移植データを出力するマクロです
+
+Option Explicit
+
+' ===================== ユーザー設定（ここだけ編集） =====================
+Private Const SH_NUM As String = "S24_GS（年齢別）"        ' 分子シート
+Private Const PT_NUM As String = "P24_GS（年齢別）"        ' 分子ピボット名
+Private Const SH_DEN As String = "S23__母数_GS（年齢別）"  ' 分母シート
+Private Const PT_DEN As String = "P23__母数_GS（年齢別）"  ' 分母ピボット名
+
+' 年・月フィルタ（既定値／セル未指定時のフォールバック）
+' 例: 年 "ALL" / "2025" / "2023-2025" / "2025,2024"
+'     月 "ALL" / "1" / "2-4" / "2,9" / "2～4"
+Private Const YEAR_SPEC  As String = "2025"
+Private Const MONTH_SPEC As String = "ALL"
+
+' 行ラベルの使用列：False=左端（既定）、True=右端（行ラベルが2列化した場合など）
+Private Const USE_RIGHTMOST_ROW_FIELD_COLUMN As Boolean = False
+
+' デバッグ：キー作成時にイミディエイト出力するか（Trueで出力）
+Private Const DEBUG_PRINT_KEYS As Boolean = False
+
+' 出力先シート名（変更可）
+Private Const OUTPUT_SHEET_NAME As String = "移植_年齢別集計"
+
+' 院名の指定セル（例: 操作画面!C22 に "ALL" または "新宿, 渋谷"）
+Private Const CLINIC_SELECT_SHEET As String = "操作画面"
+Private Const CLINIC_SELECT_CELL  As String = "C22"
+
+' ★年・月指定をセルから読む（セルが優先／無ければ上の定数を使う）
+Private Const YM_SELECT_SHEET As String = "操作画面"
+Private Const YEAR_SELECT_CELL As String = "C23"   ' 例: 年の指定セル
+Private Const MONTH_SELECT_CELL As String = "C24"  ' 例: 月の指定セル
+
+' ★年齢空白時に使うラベル（ピボット上の空白/blank を統一）
+Private Const AGE_LABEL_MISSING As String = "年齢記載なし"
+
+' ★年齢区分の指定セル（例：操作画面!C25 に "<30,31-35,36-40,40<"）
+Private Const AGE_BAND_SELECT_SHEET As String = "操作画面"
+Private Const AGE_BAND_SELECT_CELL  As String = "C25"
+Private Const AGE_LABEL_OTHER As String = "その他"   ' 区分に当てはまらない年齢のラベル
+' ======================================================================
+
+' 列ラベルの階層インデックス（上→下）
+Private Const COL_LV_CLINIC As Long = 2    ' 院識別番号（01,02...）
+Private Const COL_LV_CLASS  As Long = 3    ' 分類（1BT,2BT,2StepET,1分割胚,2分割胚, …）
+Private Const COL_LV_GARD   As Long = 4    ' 移植胚ガードナー
+Private Const COL_LV_AGE    As Long = 5    ' 採卵時妻年齢
+
+' === 実際に使う年・月（セル＞定数の優先で格納） ===
+Private gYearSpec As String
+Private gMonthSpec As String
+
+' === 年齢区分の使用可否と定義の保持 ===
+Private gUseAgeBands As Boolean
+Private gAgeBandSpec As String
+Private gAgeBandDefs As Collection        ' 各区分の定義（Dictionaryのコレクション）
+Private gAgeBandOrder As Collection       ' 表示順（ラベルのコレクション）
+
+' 戻るボタンのシェイプ名（毎回作り直すので固定名にして扱いやすく）
+Private Const BACK_BUTTON_NAME As String = "btnBackToOperation"
+
+
+' =====================================================================
+' ワンストップ起動：収集 → プレビュー（任意）→ 分類別シート出力
+' =====================================================================
+Public Sub BuildKeys_OnlyValuedCells_YM_Optimized()
+    ' --- 0) 年・月の指定（セル優先） ---
+    gYearSpec = ReadSpecFromCell(YM_SELECT_SHEET, YEAR_SELECT_CELL, YEAR_SPEC)
+    gMonthSpec = ReadSpecFromCell(YM_SELECT_SHEET, MONTH_SELECT_CELL, MONTH_SPEC)
+
+    ' --- 0.5) 年齢区分の読み込み（空なら区分なし＝従来どおり） ---
+' 変更後（★「ALL」も区分なしとして扱う）
+gAgeBandSpec = ReadSpecFromCell(AGE_BAND_SELECT_SHEET, AGE_BAND_SELECT_CELL, "")
+Dim specText As String        ' 一時変数（区分の評価用）
+specText = Trim$(gAgeBandSpec)          ' 前後の空白を除去
+specText = StrConv(specText, vbNarrow)  ' 全角→半角（"ＡＬＬ"対策）
+specText = UCase$(specText)             ' 大文字化（"all"対策）
+
+' 空欄 or "ALL" は「区分なし」
+gUseAgeBands = (specText <> "" And specText <> "ALL")
+
+If gUseAgeBands Then
+    ParseAgeBands gAgeBandSpec, gAgeBandDefs, gAgeBandOrder
+End If
+
+    ' --- 1) 年・月フィルタのセット作成 ---
+    Dim selYears As Object, selMonths As Object
+    Set selYears = CreateObject("Scripting.Dictionary")
+    Set selMonths = CreateObject("Scripting.Dictionary")
+    BuildSelectionSet gYearSpec, 1900, 2100, selYears         ' 年は 1900-2100
+    BuildSelectionSet gMonthSpec, 1, 12, selMonths            ' 月は 1-12
+
+    ' --- 1.5) 院フィルタのセット作成（"01","02"...）---
+    Dim selClinics As Object
+    BuildClinicSelectionSet selClinics   ' 操作画面!C22から院名 → コード辞書へ
+
+    ' --- 2) 高速化フラグ ---
+    Dim scr As Boolean, ev As Boolean, calc As XlCalculation
+    scr = Application.ScreenUpdating: Application.ScreenUpdating = False
+    ev = Application.EnableEvents: Application.EnableEvents = False
+    calc = Application.Calculation: Application.Calculation = xlCalculationManual
+
+    On Error GoTo CLEANUP
+
+    ' --- 3) 分子・分母のキー収集 ---
+    Dim numDict As Object, denDict As Object
+    Set numDict = CreateObject("Scripting.Dictionary")
+    Set denDict = CreateObject("Scripting.Dictionary")
+
+    Collect_YM_Optimized SH_NUM, PT_NUM, numDict, selYears, selMonths, selClinics
+    Collect_YM_Optimized SH_DEN, PT_DEN, denDict, selYears, selMonths, selClinics
+
+    If DEBUG_PRINT_KEYS Then
+        Debug.Print "=== Year+Month (Valued-only, zero skipped) with Caches ==="
+        Debug.Print "YEAR_SPEC=" & gYearSpec & " / " & gMonthSpec & IIf(gUseAgeBands, " / 区分: " & gAgeBandSpec, "")
+        Debug.Print "Numerator keys:", numDict.count, "  Denominator keys:", denDict.count
+    End If
+
+    ' --- 4) イミディエイトで年齢別割合をプレビュー（任意） ---
+    PrintAgeRatiosImmediate numDict, denDict
+
+    ' --- 5) 分類ごとシート出力 ---
+    WriteAgeRatiosToSheet_ByClass numDict, denDict, OUTPUT_SHEET_NAME, selClinics
+    
+    ' --- 5.5) 出力シートへ移動（A1を表示） ---
+    Application.Goto ThisWorkbook.Worksheets(OUTPUT_SHEET_NAME).Range("A1"), True
+
+
+'    MsgBox "完了：収集 → 出力（" & OUTPUT_SHEET_NAME & "）", vbInformation
+
+CLEANUP:
+    Application.ScreenUpdating = scr
+    Application.EnableEvents = ev
+    Application.Calculation = calc
+
+    If Err.Number <> 0 Then
+        MsgBox "エラー: " & Err.Description, vbExclamation
+    End If
+End Sub
+
+
+' =====================================================================
+' ピボット1個分を処理：最適化の中心ロジック（院フィルタ対応版）
+' =====================================================================
+Private Sub Collect_YM_Optimized( _
+    ByVal shName As String, ByVal ptName As String, ByRef outDict As Object, _
+    ByVal selYears As Object, ByVal selMonths As Object, ByVal selClinics As Object)
+
+    Dim ws As Worksheet, pvt As pivotTable
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets(shName)
+    If Not ws Is Nothing Then Set pvt = ws.PivotTables(ptName)
+    On Error GoTo 0
+
+    If ws Is Nothing Then Err.Raise vbObjectError + 501, , "シートが見つかりません: " & shName
+    If pvt Is Nothing Then
+        If ws.PivotTables.count = 0 Then Err.Raise vbObjectError + 502, , "ピボットがありません: " & shName
+        Set pvt = ws.PivotTables(1)
+    End If
+    If pvt.DataBodyRange Is Nothing Then Exit Sub   ' データ無し
+
+    ' ピボットの主要レンジ
+    Dim dataRng As Range, colHdr As Range, rowHdr As Range
+    Set dataRng = pvt.DataBodyRange
+    Set colHdr = pvt.ColumnRange
+    Set rowHdr = pvt.RowRange
+
+    ' ---- 値を配列で一括取得 ----
+    Dim v As Variant
+    v = dataRng.value  ' 1-based 2D 配列
+
+    Dim nRows As Long, nCols As Long
+    nRows = UBound(v, 1)
+    nCols = UBound(v, 2)
+
+    ' 実セル座標のオフセット
+    Dim topRow As Long, leftCol As Long
+    topRow = dataRng.row
+    leftCol = dataRng.Column
+
+    ' absRow は行番号保持用
+    Dim absRow As Long
+
+    Dim i As Long, j As Long
+
+    ' ---- 行ヘッダ（年・月）を行単位でキャッシュ（上方向遡及） ----
+    Dim rowYear() As Long, rowMonth() As Long
+    ReDim rowYear(1 To nRows)
+    ReDim rowMonth(1 To nRows)
+
+    For i = 1 To nRows
+        absRow = topRow + i - 1
+        ScanYearMonthForRow rowHdr, absRow, rowYear(i), rowMonth(i)
+    Next i
+
+    ' ---- 列ヘッダ（キャリー方式＋総計除外）を列単位でキャッシュ ----
+    Dim colClinic() As String, colClass() As String, colGard() As String, colAge() As String
+    Dim okCarry As Boolean: okCarry = False
+    If Not colHdr Is Nothing Then
+        If colHdr.Columns.count = nCols Then
+            BuildColumnHeaderCache colHdr, colClinic, colClass, colGard, colAge
+            okCarry = True
+        End If
+    End If
+    If Not okCarry Then
+        ' フォールバック：列ごとに後退参照（結合セル対応）＋総計除外
+        ReDim colClinic(1 To nCols)
+        ReDim colClass(1 To nCols)
+        ReDim colGard(1 To nCols)
+        ReDim colAge(1 To nCols)
+        For j = 1 To nCols
+            Dim absCol As Long
+            absCol = leftCol + j - 1
+            colClinic(j) = GetHeaderValueFromColumnHeaders(colHdr, absCol, COL_LV_CLINIC)
+            colClass(j) = GetHeaderValueFromColumnHeaders(colHdr, absCol, COL_LV_CLASS)
+            colGard(j) = GetHeaderValueFromColumnHeaders(colHdr, absCol, COL_LV_GARD)
+            colAge(j) = GetHeaderValueFromColumnHeaders(colHdr, absCol, COL_LV_AGE)
+
+            If Len(colClinic(j)) > 0 Then colClinic(j) = Pad2(colClinic(j)) ' "01"化
+
+            ' 総計列は無効化
+            If IsTotalLabel(colClinic(j)) Or IsTotalLabel(colClass(j)) _
+               Or IsTotalLabel(colGard(j)) Or IsTotalLabel(colAge(j)) Then
+                colClinic(j) = "": colClass(j) = "": colGard(j) = "": colAge(j) = ""
+            End If
+            ' ★年齢が空なら未記載ラベルで補う
+            If Trim$(colAge(j)) = "" Then colAge(j) = AGE_LABEL_MISSING
+        Next j
+    End If
+
+    ' ---- 本体走査 ----
+    Dim yy As Long, mm As Long, val As Double
+    Dim clinic As String, classTok As String, gardner As String, ageTok As String
+    Dim key As String
+
+    For i = 1 To nRows
+        absRow = topRow + i - 1
+
+        ' ★行側の総計/小計/合計行はスキップ（年=ALLの二重計上対策）
+        If IsAggregatedRow(rowHdr, absRow) Then GoTo CONTINUE_NEXT_ROW
+
+        yy = rowYear(i): mm = rowMonth(i)
+        ' 年月バリデーション
+        If yy < 1900 Or yy > 2100 Or mm < 1 Or mm > 12 Then GoTo CONTINUE_NEXT_ROW
+        ' 年・月フィルタ
+        If Not selYears.Exists(CStr(yy)) Then GoTo CONTINUE_NEXT_ROW
+        If Not selMonths.Exists(CStr(mm)) Then GoTo CONTINUE_NEXT_ROW
+
+        For j = 1 To nCols
+            ' 値チェック
+            If IsError(v(i, j)) Then GoTo CONTINUE_NEXT_CELL
+            If IsEmpty(v(i, j)) Then GoTo CONTINUE_NEXT_CELL
+
+            If VarType(v(i, j)) = vbString Then
+                If Trim$(CStr(v(i, j))) = "" Then GoTo CONTINUE_NEXT_CELL
+                If Not IsNumeric(v(i, j)) Then GoTo CONTINUE_NEXT_CELL
+                val = CDbl(v(i, j))
+            ElseIf IsNumeric(v(i, j)) Then
+                val = CDbl(v(i, j))
+            Else
+                GoTo CONTINUE_NEXT_CELL
+            End If
+
+            ' 0 はスキップ（キー作らない）
+            If val = 0# Then GoTo CONTINUE_NEXT_CELL
+
+            ' 列ヘッダ（総計列はすでに空）
+            clinic = colClinic(j)     ' "01","02",...
+            classTok = colClass(j)
+            gardner = colGard(j)
+            ageTok = NormalizeAgeToken(colAge(j))  ' ★年齢を正規化（数値 or 年齢記載なし）
+
+            ' ★院/分類/ガードナーは空ならスキップ、年齢はスキップしない
+            If Len(clinic) = 0 Or Len(classTok) = 0 Or Len(gardner) = 0 Then GoTo CONTINUE_NEXT_CELL
+
+            ' ★ 院フィルタ：選択セットに無ければ除外
+            If Not selClinics Is Nothing Then
+                If selClinics.count > 0 Then
+                    If Not selClinics.Exists(clinic) Then GoTo CONTINUE_NEXT_CELL
+                End If
+            End If
+
+            ' キー作成（院|分類|ガードナー|年齢|YYYY-MM）
+            key = Join(Array(clinic, classTok, gardner, ageTok, CStr(yy) & "-" & Format$(mm, "00")), "|")
+
+            ' 加算
+            If outDict.Exists(key) Then
+                outDict(key) = outDict(key) + val
+            Else
+                outDict.Add key, val
+            End If
+
+CONTINUE_NEXT_CELL:
+        Next j
+CONTINUE_NEXT_ROW:
+    Next i
+End Sub
+
+
+
+' ================== 出力（年齢別：プレビュー＆分類別シート） ==================
+
+' イミディエイト出力（任意、全分類合算の簡易プレビュー）
+Private Sub PrintAgeRatiosImmediate(ByVal numDict As Object, ByVal denDict As Object)
+    Dim ageNum As Object, ageDen As Object
+    Set ageNum = CreateObject("Scripting.Dictionary")
+    Set ageDen = CreateObject("Scripting.Dictionary")
+
+    Dim allNum As Double, allDen As Double
+    BuildAgeAggregates numDict, denDict, ageNum, ageDen, allNum, allDen
+
+    Dim ages As Variant, i As Long, aKey As String
+    ages = SortedAgeKeys(ageNum, ageDen)
+    If IsEmpty(ages) Then
+        Debug.Print "（該当なし）"
+        Exit Sub
+    End If
+
+    Debug.Print "=== 年齢別 割合（" & gYearSpec & " / " & gMonthSpec & IIf(gUseAgeBands, " / 区分: " & gAgeBandSpec, "") & "）==="
+    Debug.Print "年齢(区分)", "n（分子/分母）", "割合(%)"
+
+    For i = LBound(ages) To UBound(ages)
+        aKey = CStr(ages(i)) ' "35" or "年齢記載なし" or 区分ラベル
+        Dim nval As Double, dval As Double
+        nval = NzD(ageNum(aKey))
+        dval = NzD(ageDen(aKey))
+        Debug.Print aKey, CStr(nval) & "/" & CStr(dval), Percent1Decimal(nval, dval)
+    Next i
+
+    Debug.Print "ALL", CStr(allNum) & "/" & CStr(allDen), Percent1Decimal(allNum, allDen)
+End Sub
+
+' === 分類ごとにブロック出力（横線レイアウト＆中央揃え対応） ===
+Private Sub WriteAgeRatiosToSheet_ByClass( _
+    ByVal numDict As Object, ByVal denDict As Object, _
+    ByVal outSheetName As String, ByVal selClinics As Object)
+
+    ' 1) まず「分類×年齢(区分)」に集計しておく
+    Dim ageNumPer As Object, ageDenPer As Object, totalNumPer As Object, totalDenPer As Object
+    BuildAgeAggregatesByClass numDict, denDict, ageNumPer, ageDenPer, totalNumPer, totalDenPer
+
+    ' 2) 出力先シートを用意（無ければ作成／あればクリア）
+    Dim ws As Worksheet
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets(outSheetName)
+    On Error GoTo 0
+    If ws Is Nothing Then
+        Set ws = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.count))
+        ws.name = outSheetName
+    Else
+        ws.Cells.Clear
+    End If
+
+    ' 3) 右上のメタ情報（ここは書式そのまま：中央揃え等は適用しない）
+    ws.Range("G1").value = "対象年: " & gYearSpec
+    ws.Range("H1").value = "対象月: " & gMonthSpec
+    ws.Range("G2").value = "対象院: " & GetClinicLabel(selClinics)
+    If gUseAgeBands Then ws.Range("G3").value = "年齢区分: " & gAgeBandSpec
+    ws.Range("G1:H1").Font.Bold = True
+
+    ' 4) 出力順（ブロックの並び）
+    Dim order As Variant
+    order = Array("All", "SBT", "DBT", "2StepET", "Cleavage-Stage ET", "その他")
+
+    ' 5) 出力本体
+    Dim rowOut As Long: rowOut = 1            ' 出力用の現在行
+    Dim bi As Long
+    For bi = LBound(order) To UBound(order)
+        Dim bucket As String: bucket = CStr(order(bi))
+
+        ' 行位置を覚えておく（横線を引くため）
+        Dim titleRow As Long      ' 「【bucket】」行
+        Dim headerRow As Long     ' ヘッダ行
+        Dim dataLastRow As Long   ' データ最終行（データ無しならヘッダ行）
+        Dim allRow As Long        ' ALL 行
+
+        ' --- 見出し（例： 【All】） ---
+        rowOut = rowOut + 1
+        ws.Cells(rowOut, 1).value = "【" & bucket & "】"
+        ws.Cells(rowOut, 1).Font.Bold = True
+        titleRow = rowOut
+
+        ' --- ヘッダ行 ---
+        rowOut = rowOut + 1
+        ws.Cells(rowOut, 1).value = IIf(gUseAgeBands, "年齢区分", "年齢")
+        ws.Cells(rowOut, 2).value = "GS率(%) GS数/移植胚数"
+        ws.Cells(rowOut, 3).value = "分子/分母"
+        ws.Cells(rowOut, 4).value = "分子"
+        ws.Cells(rowOut, 5).value = "分母"
+        ws.Range(ws.Cells(rowOut, 1), ws.Cells(rowOut, 5)).Font.Bold = True
+        headerRow = rowOut
+        dataLastRow = headerRow   ' データが無いときに備えて初期値を置く
+
+        ' --- データ本体 ---
+        Dim ages As Variant, i As Long, aKey As String
+        ages = SortedAgeKeys(ageNumPer(bucket), ageDenPer(bucket))  ' 並び順：区分順→その他→年齢記載なし（または数値昇順）
+        If Not IsEmpty(ages) Then
+            For i = LBound(ages) To UBound(ages)
+                aKey = CStr(ages(i))  ' 例："<30" / "31-35" / "年齢記載なし" など
+                Dim nval As Double, dval As Double
+                nval = NzD(ageNumPer(bucket)(aKey))
+                dval = NzD(ageDenPer(bucket)(aKey))
+
+                rowOut = rowOut + 1
+                ws.Cells(rowOut, 1).value = aKey
+
+                If dval <= 0# Then
+                    ws.Cells(rowOut, 2).value = "-"
+                Else
+                    Dim p As Double
+                    p = Application.WorksheetFunction.Round((nval / dval) * 100#, 1) ' 小数1桁に丸め
+                    ws.Cells(rowOut, 2).value = p
+                    ws.Cells(rowOut, 2).NumberFormat = "0.0"   ' 常に1桁表示（例：0 → 0.0）
+                End If
+
+                ws.Cells(rowOut, 3).value = "'" & CStr(nval) & "/" & CStr(dval)  ' 日付変換防止のためテキストに
+                ws.Cells(rowOut, 4).value = nval
+                ws.Cells(rowOut, 5).value = dval
+
+                dataLastRow = rowOut   ' 最終データ行を更新
+            Next i
+        End If
+
+        ' --- ALL 行（当該バケット合計） ---
+        rowOut = rowOut + 1
+        Dim tN As Double, tD As Double
+        tN = NzD(totalNumPer(bucket))
+        tD = NzD(totalDenPer(bucket))
+
+        ws.Cells(rowOut, 1).value = "ALL"
+        If tD <= 0# Then
+            ws.Cells(rowOut, 2).value = "-"
+        Else
+            Dim pall As Double
+            pall = Application.WorksheetFunction.Round((tN / tD) * 100#, 1)
+            ws.Cells(rowOut, 2).value = pall
+            ws.Cells(rowOut, 2).NumberFormat = "0.0"
+        End If
+        ws.Cells(rowOut, 3).value = "'" & CStr(tN) & "/" & CStr(tD)
+        ws.Cells(rowOut, 4).value = tN
+        ws.Cells(rowOut, 5).value = tD
+        ws.Range(ws.Cells(rowOut, 1), ws.Cells(rowOut, 5)).Font.Bold = True
+        allRow = rowOut
+
+        ' --- 横線（罫線）を引く ---
+        ' 太線：見出し直下
+        With ws.Range(ws.Cells(titleRow, 1), ws.Cells(titleRow, 5)).Borders(xlEdgeBottom)
+            .LineStyle = xlContinuous
+            .Weight = xlMedium
+        End With
+        ' 普通線：ヘッダ直下
+        With ws.Range(ws.Cells(headerRow, 1), ws.Cells(headerRow, 5)).Borders(xlEdgeBottom)
+            .LineStyle = xlContinuous
+            .Weight = xlThin   ' 見やすさ次第で xlMedium でもOK
+        End With
+        ' 普通線：データ最終行の直下（データなしならヘッダ直下と同じ）
+        With ws.Range(ws.Cells(dataLastRow, 1), ws.Cells(dataLastRow, 5)).Borders(xlEdgeBottom)
+            .LineStyle = xlContinuous
+            .Weight = xlThin
+        End With
+        ' 太線：ALL行の直下
+        With ws.Range(ws.Cells(allRow, 1), ws.Cells(allRow, 5)).Borders(xlEdgeBottom)
+            .LineStyle = xlContinuous
+            .Weight = xlMedium
+        End With
+
+        ' セクション間の空行（1行）
+        rowOut = rowOut + 1
+    Next bi
+
+    ' 6) 体裁：列幅調整と（A～E列のみ）左右・上下中央揃え
+    ws.Columns("A:E").AutoFit
+    With ws.Range(ws.Cells(1, 1), ws.Cells(rowOut, 5))
+        .HorizontalAlignment = xlCenter     ' 左右中央揃え
+        .VerticalAlignment = xlVAlignCenter ' 上下中央揃え
+        '.WrapText = False                  ' 必要なら折返しを無効化
+    End With
+    ' 体裁
+ws.Columns("A:E").AutoFit
+With ws.Range(ws.Cells(1, 1), ws.Cells(rowOut, 5))
+    .HorizontalAlignment = xlCenter
+    .VerticalAlignment = xlVAlignCenter
+End With
+
+' ★戻るボタンを作成（シートを毎回クリアするため、最後に作り直す）
+CreateBackButtonOnOutput
+    
+End Sub
+
+
+' ============ 年齢別（全分類合算）の集約 ============
+Private Sub BuildAgeAggregates( _
+    ByVal numDict As Object, ByVal denDict As Object, _
+    ByRef ageNum As Object, ByRef ageDen As Object, _
+    ByRef allNum As Double, ByRef allDen As Double)
+
+    allNum = 0#: allDen = 0#
+
+    Dim k As Variant, age As String, val As Double
+    Set ageNum = CreateObject("Scripting.Dictionary")
+    Set ageDen = CreateObject("Scripting.Dictionary")
+
+    ' 分母：年齢キー→（区分があれば）区分ラベルへ変換して集計
+    For Each k In denDict.keys
+        age = AgeFromKey(CStr(k))
+        If age <> "" Then
+            Dim ageKeyDen As String
+            ageKeyDen = AgeKeyToBucket(age)
+            val = NzD(denDict(k))
+            If ageDen.Exists(ageKeyDen) Then ageDen(ageKeyDen) = ageDen(ageKeyDen) + val Else ageDen.Add ageKeyDen, val
+            allDen = allDen + val
+        End If
+    Next k
+
+    ' 分子（★2個胚移植の補正：0.5倍）も同様に区分化
+    For Each k In numDict.keys
+        age = AgeFromKey(CStr(k))
+        If age <> "" Then
+            Dim cls As String, f As Double, ageKeyNum As String
+            cls = ClassFromKey(CStr(k))     ' キーから分類を取得
+            f = NumFactorForClass(cls)      ' 2個胚なら0.5、それ以外1.0
+            val = NzD(numDict(k)) * f
+            ageKeyNum = AgeKeyToBucket(age)
+            If ageNum.Exists(ageKeyNum) Then
+                ageNum(ageKeyNum) = ageNum(ageKeyNum) + val
+            Else
+                ageNum.Add ageKeyNum, val
+            End If
+            allNum = allNum + val
+        End If
+    Next k
+
+    ' 分子にしか無いキー → 分母0を補完
+    For Each k In ageNum.keys
+        If Not ageDen.Exists(k) Then ageDen.Add k, 0#
+    Next k
+End Sub
+
+
+' ============ 分類ごとの集約（指定バケットに正規化） ============
+' 分類名 → 出力バケット名へ正規化
+Private Function MapClassToBucket(ByVal classTok As String) As String
+    ' 1BT → SBT / 2BT → DBT / 2StepET → 2StepET
+    ' 1分割胚, 2分割胚 → Cleavage-Stage ET / それ以外 → その他
+    Dim s As String: s = Trim$(classTok)
+    Dim su As String
+    su = UCase$(Replace(Replace(s, " ", ""), "－", "-"))
+
+    If InStr(su, "1BT") > 0 Then
+        MapClassToBucket = "SBT"
+    ElseIf InStr(su, "2BT") > 0 Then
+        MapClassToBucket = "DBT"
+    ElseIf InStr(Replace(su, "-", ""), "2STEPET") > 0 Then
+        MapClassToBucket = "2StepET"
+    ElseIf InStr(s, "1分割胚") > 0 Or InStr(s, "2分割胚") > 0 Then
+        MapClassToBucket = "Cleavage-Stage ET"
+    Else
+        MapClassToBucket = "その他"
+    End If
+End Function
+
+' === NEW: 2個胚移植の判定（分子を0.5倍にする対象）===
+Private Function IsDoubleEmbryoClass(ByVal classTok As String) As Boolean
+    ' 表記ゆれ対策（大文字化/空白除去/全角ハイフン→半角）
+    Dim s As String
+    s = UCase$(Replace(Replace(Trim$(classTok), " ", ""), "－", "-"))
+    If InStr(s, "2BT") > 0 Then IsDoubleEmbryoClass = True: Exit Function
+    If InStr(Replace(s, "-", ""), "2STEPET") > 0 Then IsDoubleEmbryoClass = True: Exit Function
+    If InStr(classTok, "2分割胚") > 0 Then IsDoubleEmbryoClass = True: Exit Function
+    If InStr(classTok, "2想定外STAGE") > 0 Then IsDoubleEmbryoClass = True: Exit Function
+    If InStr(classTok, "混在") > 0 And InStr(classTok, "1想定外") > 0 Then IsDoubleEmbryoClass = True: Exit Function
+End Function
+
+' === NEW: 分子の係数を返す（2個胚移植なら0.5、それ以外は1.0）===
+Private Function NumFactorForClass(ByVal classTok As String) As Double
+    If IsDoubleEmbryoClass(classTok) Then
+        NumFactorForClass = 0.5
+    Else
+        NumFactorForClass = 1#
+    End If
+End Function
+
+' キー "院|分類|ガード|年齢|YYYY-MM" から分類を返す
+Private Function ClassFromKey(ByVal key As String) As String
+    Dim parts() As String
+    parts = Split(key, "|")
+    If UBound(parts) >= 1 Then ClassFromKey = parts(1)
+End Function
+
+' 分類ごと（バケット）× 年齢（区分）に集計
+Private Sub BuildAgeAggregatesByClass( _
+    ByVal numDict As Object, ByVal denDict As Object, _
+    ByRef ageNumPer As Object, ByRef ageDenPer As Object, _
+    ByRef totalNumPer As Object, ByRef totalDenPer As Object)
+
+    Dim bucketsOrder As Variant
+    bucketsOrder = Array("SBT", "DBT", "2StepET", "Cleavage-Stage ET", "その他")  ' All は後で作る
+
+    Set ageNumPer = CreateObject("Scripting.Dictionary")
+    Set ageDenPer = CreateObject("Scripting.Dictionary")
+    Set totalNumPer = CreateObject("Scripting.Dictionary")
+    Set totalDenPer = CreateObject("Scripting.Dictionary")
+
+    Dim i As Long
+    For i = LBound(bucketsOrder) To UBound(bucketsOrder)
+        Dim b As String: b = CStr(bucketsOrder(i))
+        Set ageNumPer(b) = CreateObject("Scripting.Dictionary")
+        Set ageDenPer(b) = CreateObject("Scripting.Dictionary")
+        totalNumPer(b) = 0#
+        totalDenPer(b) = 0#
+    Next i
+
+    Dim k As Variant, age As String, cls As String, bucket As String, val As Double, f As Double
+
+    ' 分母（補正なし）
+    For Each k In denDict.keys
+        age = AgeFromKey(CStr(k))
+        If age <> "" Then
+            cls = ClassFromKey(CStr(k))
+            bucket = MapClassToBucket(cls)
+            val = NzD(denDict(k))
+            Dim ageKeyDen As String: ageKeyDen = AgeKeyToBucket(age)
+            If ageDenPer(bucket).Exists(ageKeyDen) Then
+                ageDenPer(bucket)(ageKeyDen) = ageDenPer(bucket)(ageKeyDen) + val
+            Else
+                ageDenPer(bucket).Add ageKeyDen, val
+            End If
+            totalDenPer(bucket) = totalDenPer(bucket) + val
+        End If
+    Next k
+
+    ' 分子（★2個胚移植の補正：0.5倍）
+    For Each k In numDict.keys
+        age = AgeFromKey(CStr(k))
+        If age <> "" Then
+            cls = ClassFromKey(CStr(k))
+            bucket = MapClassToBucket(cls)
+            f = NumFactorForClass(cls)
+            val = NzD(numDict(k)) * f
+            Dim ageKeyNum As String: ageKeyNum = AgeKeyToBucket(age)
+            If ageNumPer(bucket).Exists(ageKeyNum) Then
+                ageNumPer(bucket)(ageKeyNum) = ageNumPer(bucket)(ageKeyNum) + val
+            Else
+                ageNumPer(bucket).Add ageKeyNum, val
+            End If
+            totalNumPer(bucket) = totalNumPer(bucket) + val
+        End If
+    Next k
+
+    ' All（全バケット合算）
+    Dim allNum As Object, allDen As Object
+    Set allNum = CreateObject("Scripting.Dictionary")
+    Set allDen = CreateObject("Scripting.Dictionary")
+    Dim allN As Double: allN = 0#
+    Dim allD As Double: allD = 0#
+
+    For i = LBound(bucketsOrder) To UBound(bucketsOrder)
+        Dim bb As String: bb = CStr(bucketsOrder(i))
+        Dim ageK As Variant
+
+        For Each ageK In ageDenPer(bb).keys
+            If allDen.Exists(CStr(ageK)) Then
+                allDen(CStr(ageK)) = allDen(CStr(ageK)) + NzD(ageDenPer(bb)(ageK))
+            Else
+                allDen.Add CStr(ageK), NzD(ageDenPer(bb)(ageK))
+            End If
+        Next
+        For Each ageK In ageNumPer(bb).keys
+            If allNum.Exists(CStr(ageK)) Then
+                allNum(CStr(ageK)) = allNum(CStr(ageK)) + NzD(ageNumPer(bb)(ageK))
+            Else
+                allNum.Add CStr(ageK), NzD(ageNumPer(bb)(ageK))
+            End If
+        Next
+        allN = allN + NzD(totalNumPer(bb))
+        allD = allD + NzD(totalDenPer(bb))
+    Next i
+
+    Set ageNumPer("All") = allNum
+    Set ageDenPer("All") = allDen
+    totalNumPer("All") = allN
+    totalDenPer("All") = allD
+End Sub
+
+
+' ============ 出力ユーティリティ他 ============
+' ★キー "院|分類|ガード|年齢|YYYY-MM" から年齢要素（4番目）を正規化で返す
+Private Function AgeFromKey(ByVal key As String) As String
+    Dim parts() As String
+    parts = Split(key, "|")
+    If UBound(parts) >= 3 Then
+        AgeFromKey = NormalizeAgeToken(parts(3)) ' 数字 or "年齢記載なし"
+    End If
+End Function
+
+' ★区分あり：区分順→その他→年齢記載なし。区分なし：数値昇順→年齢記載なし
+Private Function SortedAgeKeys(ByVal ageNum As Object, ByVal ageDen As Object) As Variant
+    Dim present As Object: Set present = CreateObject("Scripting.Dictionary")
+    Dim k As Variant
+    If Not ageNum Is Nothing Then For Each k In ageNum.keys: present(CStr(k)) = True: Next
+    If Not ageDen Is Nothing Then For Each k In ageDen.keys: present(CStr(k)) = True: Next
+    If present.count = 0 Then SortedAgeKeys = Array(): Exit Function
+
+    Dim outArr() As Variant, idx As Long: idx = 0
+
+    If gUseAgeBands Then
+        ' 1) 区分順
+        Dim lab As Variant
+        For Each lab In gAgeBandOrder
+            If present.Exists(CStr(lab)) Then
+                idx = idx + 1: ReDim Preserve outArr(1 To idx)
+                outArr(idx) = CStr(lab)
+                present.Remove CStr(lab)
+            End If
+        Next
+        ' 2) その他
+        If present.Exists(AGE_LABEL_OTHER) Then
+            idx = idx + 1: ReDim Preserve outArr(1 To idx)
+            outArr(idx) = AGE_LABEL_OTHER
+            present.Remove AGE_LABEL_OTHER
+        End If
+        ' 3) 年齢記載なし（最後）
+        If present.Exists(AGE_LABEL_MISSING) Then
+            idx = idx + 1: ReDim Preserve outArr(1 To idx)
+            outArr(idx) = AGE_LABEL_MISSING
+            present.Remove AGE_LABEL_MISSING
+        End If
+        SortedAgeKeys = outArr
+        Exit Function
+    End If
+
+    ' ?? 区分なし（従来）：数値昇順→"年齢記載なし"
+    Dim nums() As Long, nCount As Long: nCount = 0
+    For Each k In present.keys
+        If k <> AGE_LABEL_MISSING And k Like String(Len(k), "#") Then
+            nCount = nCount + 1: ReDim Preserve nums(1 To nCount)
+            nums(nCount) = CLng(k)
+        End If
+    Next
+    ' sort
+    Dim i As Long, j As Long, t As Long
+    If nCount > 1 Then
+        For i = 1 To nCount - 1
+            For j = i + 1 To nCount
+                If nums(i) > nums(j) Then t = nums(i): nums(i) = nums(j): nums(j) = t
+            Next j
+        Next i
+    End If
+    For i = 1 To nCount
+        idx = idx + 1: ReDim Preserve outArr(1 To idx)
+        outArr(idx) = CStr(nums(i))
+    Next
+    If present.Exists(AGE_LABEL_MISSING) Then
+        idx = idx + 1: ReDim Preserve outArr(1 To idx)
+        outArr(idx) = AGE_LABEL_MISSING
+    End If
+    SortedAgeKeys = outArr
+End Function
+
+' 分子/分母 → パーセント文字列（小数1位、四捨五入）。分母0なら "-」
+Private Function Percent1Decimal(ByVal n As Double, ByVal d As Double) As String
+    If d <= 0# Then
+        Percent1Decimal = "-"
+    ElseIf n = 0# Then
+        Percent1Decimal = "0.0"
+    Else
+        Dim p As Double
+        p = Application.WorksheetFunction.Round((n / d) * 100#, 1)
+        Percent1Decimal = Format$(p, "0.0")
+    End If
+End Function
+
+' Null/Empty対策の数値化
+Private Function NzD(ByVal v As Variant) As Double
+    If IsError(v) Then
+        NzD = 0#
+    ElseIf IsEmpty(v) Then
+        NzD = 0#
+    ElseIf VarType(v) = vbString Then
+        If Trim$(CStr(v)) = "" Then NzD = 0# Else NzD = CDbl(v)
+    ElseIf IsNumeric(v) Then
+        NzD = CDbl(v)
+    Else
+        NzD = 0#
+    End If
+End Function
+
+' 総計/小計ラベル判定（列・行どちらにも使える共通版）
+Private Function IsTotalLabel(ByVal s As String) As Boolean
+    ' 日本語/英語の総計・小計・合計表記を広くカバー
+    ' 例: "総計", "小計", "合計", "Grand Total", "Total", "Subtotal"
+    Dim t As String
+    t = UCase$(Replace(Replace(Trim$(s), " ", ""), "　", ""))  ' 空白を除去（全角含む）
+    
+    IsTotalLabel = ( _
+          InStr(t, "総計") > 0 _
+       Or InStr(t, "小計") > 0 _
+       Or InStr(t, "合計") > 0 _
+       Or InStr(t, "GRANDTOTAL") > 0 _
+       Or InStr(t, "SUBTOTAL") > 0 _
+       Or (t = "TOTAL") _
+    )
+End Function
+
+
+' 年の見た目判定（4桁数字）
+Private Function LooksLikeYearPure(ByVal s As String) As Boolean
+    If s Like String(4, "#") Then
+        Dim y As Long: y = CLng(s)
+        LooksLikeYearPure = (y >= 1900 And y <= 2100)
+    End If
+End Function
+
+' 月の見た目判定（"1"?"12" を含む文字列）
+Private Function LooksLikeMonthJP(ByVal s As String) As Boolean
+    Dim d As String: d = ExtractDigits(s)
+    If Len(d) >= 1 And Len(d) <= 2 Then
+        Dim m As Long: m = CLng(d)
+        LooksLikeMonthJP = (m >= 1 And m <= 12)
+    End If
+End Function
+
+Private Function ExtractDigits(ByVal s As String) As String
+    Dim i As Long, ch As String, t As String
+    For i = 1 To Len(s)
+        ch = Mid$(s, i, 1)
+        If ch Like "[0-9]" Then t = t & ch
+    Next i
+    ExtractDigits = t
+End Function
+
+Private Function Pad2(ByVal s As String) As String
+    Dim n As Long
+    On Error Resume Next
+    n = CLng(s)
+    If Err.Number = 0 Then
+        Pad2 = Format$(n, "00")
+    Else
+        Err.Clear
+        Pad2 = s
+    End If
+    On Error GoTo 0
+End Function
+
+
+' ====================== ヘッダ処理（キャリー方式） ======================
+' 列ヘッダを一括キャッシュ（親項目の空白は直前の非空値で埋める）＋総計除外
+Private Sub BuildColumnHeaderCache( _
+    ByVal colHdr As Range, _
+    ByRef colClinic() As String, ByRef colClass() As String, _
+    ByRef colGard() As String, ByRef colAge() As String)
+
+    If colHdr Is Nothing Then Exit Sub
+
+    Dim nLevels As Long, nCols As Long
+    nLevels = colHdr.Rows.count
+    nCols = colHdr.Columns.count
+
+    Dim arr As Variant
+    arr = colHdr.value  ' 1-based
+
+    Dim r As Long, c As Long, carry As String, s As String
+
+    For r = 1 To nLevels
+        carry = ""
+        For c = 1 To nCols
+            s = Trim$(CStr(arr(r, c)))
+            If s <> "" Then
+                carry = s
+            Else
+                arr(r, c) = carry
+            End If
+        Next c
+    Next r
+
+    ReDim colClinic(1 To nCols)
+    ReDim colClass(1 To nCols)
+    ReDim colGard(1 To nCols)
+    ReDim colAge(1 To nCols)
+
+    For c = 1 To nCols
+        colClinic(c) = CStr(arr(COL_LV_CLINIC, c))
+        colClass(c) = CStr(arr(COL_LV_CLASS, c))
+        colGard(c) = CStr(arr(COL_LV_GARD, c))
+        colAge(c) = CStr(arr(COL_LV_AGE, c))
+
+        If Len(colClinic(c)) > 0 Then colClinic(c) = Pad2(colClinic(c))
+
+        If IsTotalLabel(colClinic(c)) Or IsTotalLabel(colClass(c)) _
+           Or IsTotalLabel(colGard(c)) Or IsTotalLabel(colAge(c)) Then
+            colClinic(c) = "": colClass(c) = "": colGard(c) = "": colAge(c) = ""
+        End If
+
+        ' ★年齢が空なら未記載ラベルで補う
+        If Trim$(colAge(c)) = "" Then
+            colAge(c) = AGE_LABEL_MISSING
+        End If
+    Next c
+End Sub
+
+' ---- 年・月を行ラベルから取得（ActiveSheetに依存しない）----
+Private Sub ScanYearMonthForRow(ByVal rowHdr As Range, ByVal absRow As Long, ByRef outYear As Long, ByRef outMonth As Long)
+    outYear = 0: outMonth = 0
+    If rowHdr Is Nothing Then Exit Sub
+
+    Dim c As Long
+    If USE_RIGHTMOST_ROW_FIELD_COLUMN Then
+        c = rowHdr.Column + rowHdr.Columns.count - 1
+    Else
+        c = rowHdr.Column
+    End If
+
+    Dim r As Long, v As String
+    r = absRow
+
+    If r < rowHdr.row Or r > rowHdr.row + rowHdr.Rows.count - 1 Then Exit Sub
+
+    ' 「月」を見つける
+    Do While r >= rowHdr.row
+        v = Trim$(CStr(rowHdr.Worksheet.Cells(r, c).value))  ' 明示シート参照
+        If v <> "" Then
+            If LooksLikeMonthJP(v) Then
+                outMonth = CLng(ExtractDigits(v))
+                Exit Do
+            End If
+        End If
+        r = r - 1
+    Loop
+    If outMonth = 0 Then Exit Sub
+
+    ' 次に「年（4桁数値）」を見つける
+    Do While r >= rowHdr.row
+        v = Trim$(CStr(rowHdr.Worksheet.Cells(r, c).value))  ' 明示シート参照
+        If v <> "" Then
+            If LooksLikeYearPure(v) Then
+                outYear = CLng(v)
+                Exit Do
+            End If
+        End If
+        r = r - 1
+    Loop
+End Sub
+
+' ---- 列ヘッダ：指定レベル値を取得（結合セル対応／左へ遡る）----
+Private Function GetHeaderValueFromColumnHeaders(ByVal colHdr As Range, ByVal targetCol As Long, ByVal level As Long) As String
+    If colHdr Is Nothing Then Exit Function
+    If level < 1 Or level > colHdr.Rows.count Then Exit Function
+
+    Dim r As Long, c As Long, v As String
+    r = colHdr.row + (level - 1)
+    c = targetCol
+
+    If c < colHdr.Column Or c > colHdr.Column + colHdr.Columns.count - 1 Then Exit Function
+
+    Do While c >= colHdr.Column
+        v = CStr(colHdr.Worksheet.Cells(r, c).value)  ' 明示シート参照
+        If Trim$(v) <> "" Then
+            GetHeaderValueFromColumnHeaders = v
+            Exit Function
+        End If
+        c = c - 1
+    Loop
+End Function
+
+' === 年・月指定をセルから読み取る（空/参照不可なら既定値を返す） ===
+Private Function ReadSpecFromCell(ByVal sheetName As String, ByVal addr As String, ByVal defaultValue As String) As String
+    On Error Resume Next
+    Dim ws As Worksheet
+    Set ws = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+
+    If ws Is Nothing Then
+        ReadSpecFromCell = defaultValue
+        Exit Function
+    End If
+
+    Dim s As String
+    s = Trim$(CStr(ws.Range(addr).value))
+    If s = "" Then s = defaultValue
+
+    ReadSpecFromCell = s
+End Function
+
+' 設定セルから院名を読み取り → "01","02"... の選択セットを作成
+Private Sub BuildClinicSelectionSet(ByRef outSet As Object)
+    Dim ws As Worksheet, raw As String
+    Set outSet = CreateObject("Scripting.Dictionary")
+
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets(CLINIC_SELECT_SHEET)
+    On Error GoTo 0
+
+    If ws Is Nothing Then
+        Dim mp As Object, k As Variant
+        Set mp = M1_OPU_Summary.GetHospitalMap()
+        For Each k In mp.keys
+            outSet(Format$(CLng(mp(k)), "00")) = True
+        Next
+        Exit Sub
+    End If
+
+    raw = Trim$(CStr(ws.Range(CLINIC_SELECT_CELL).value))
+
+    ' ▼ 区切り記号の正規化（全角を半角へ） ▼
+    raw = Replace(raw, "、", ",")   ' 日本語の読点
+    raw = Replace(raw, "，", ",")   ' 全角カンマ
+    raw = Replace(raw, "　", " ")   ' 全角スペース
+
+    If UCase$(raw) = "ALL" Or raw = "" Then
+        Dim mp2 As Object, k2 As Variant
+        Set mp2 = M1_OPU_Summary.GetHospitalMap()
+        For Each k2 In mp2.keys
+            outSet(Format$(CLng(mp2(k2)), "00")) = True
+        Next
+        Exit Sub
+    End If
+
+    Dim mp3 As Object: Set mp3 = M1_OPU_Summary.GetHospitalMap()
+    Dim tokens() As String, t As Variant, name As String
+    tokens = Split(raw, ",")
+    For Each t In tokens
+        name = Trim$(CStr(t))
+        If name <> "" Then
+            If mp3.Exists(name) Then
+                outSet(Format$(CLng(mp3(name)), "00")) = True
+            End If
+        End If
+    Next
+
+    ' 無効なら全院
+    If outSet.count = 0 Then
+        Dim k3 As Variant
+        For Each k3 In mp3.keys
+            outSet(Format$(CLng(mp3(k3)), "00")) = True
+        Next
+    End If
+End Sub
+
+' 選択された院コードセット → 院名のラベル文字列（"ALL" 含む）
+Public Function GetClinicLabel(ByVal selClinics As Object) As String
+    Dim mp As Object, rev As Object, k As Variant
+    Set mp = M1_OPU_Summary.GetHospitalMap()
+    Set rev = CreateObject("Scripting.Dictionary")
+
+    ' 逆引き辞書（"01"→"新宿"）
+    For Each k In mp.keys
+        rev(Format$(CLng(mp(k)), "00")) = CStr(k)
+    Next
+
+    ' ALL 判定
+    If selClinics Is Nothing Or selClinics.count = 0 Then
+        GetClinicLabel = "ALL": Exit Function
+    End If
+    If selClinics.count >= mp.count Then
+        GetClinicLabel = "ALL": Exit Function
+    End If
+
+    ' コード並べ替え
+    Dim codes() As String, i As Long, j As Long, t As String
+    ReDim codes(1 To selClinics.count)
+    i = 1
+    For Each k In selClinics.keys
+        codes(i) = CStr(k): i = i + 1
+    Next
+    For i = LBound(codes) To UBound(codes) - 1
+        For j = i + 1 To UBound(codes)
+            If codes(i) > codes(j) Then t = codes(i): codes(i) = codes(j): codes(j) = t
+        Next j
+    Next i
+
+    ' 表示連結（日本語表記：「、」区切り）
+    Dim names As String
+    For i = LBound(codes) To UBound(codes)
+        If rev.Exists(codes(i)) Then
+            If Len(names) > 0 Then names = names & "、"
+            names = names & rev(codes(i))
+        End If
+    Next
+    If Len(names) = 0 Then names = "ALL"
+
+    GetClinicLabel = names
+End Function
+
+
+' ====================== フィルタ指定の辞書化 ======================
+' 年/月の指定文字列 → セット化（"ALL" / "a,b" / "a-b" / "a～b"）
+Private Sub BuildSelectionSet(ByVal spec As String, ByVal minVal As Long, ByVal maxVal As Long, ByRef outSet As Object)
+    Dim s As String: s = Trim$(spec)
+    Dim i As Long
+    If UCase$(s) = "ALL" Or s = "" Then
+        For i = minVal To maxVal: outSet(CStr(i)) = True: Next
+        Exit Sub
+    End If
+
+    Dim tokens() As String
+    tokens = Split(s, ",")
+
+    Dim added As Long: added = 0
+    Dim t As Variant, tok As String, a As Long, b As Long, k As Long
+
+    For Each t In tokens
+        tok = Trim$(CStr(t))
+        If tok = "" Then GoTo CONTINUE_TOK
+        tok = Replace(tok, "～", "-") ' 全角→半角
+
+        If InStr(tok, "-") > 0 Then
+            Dim parts() As String
+            parts = Split(tok, "-")
+            If UBound(parts) = 1 Then
+                If IsNumeric(parts(0)) And IsNumeric(parts(1)) Then
+                    a = CLng(parts(0)): b = CLng(parts(1))
+                    If a > b Then
+                        Dim tmp As Long: tmp = a: a = b: b = tmp ' ★ aとbを入れ替える
+                    End If
+                    If a < minVal Then a = minVal
+                    If b > maxVal Then b = maxVal
+                    For k = a To b
+                        outSet(CStr(k)) = True
+                        added = added + 1
+                    Next k
+                End If
+            End If
+        Else
+            If IsNumeric(tok) Then
+                k = CLng(tok)
+                If k >= minVal And k <= maxVal Then
+                    outSet(CStr(k)) = True
+                    added = added + 1
+                End If
+            End If
+        End If
+CONTINUE_TOK:
+    Next
+
+    If added = 0 Then
+        For i = minVal To maxVal: outSet(CStr(i)) = True: Next
+    End If
+End Sub
+
+
+' ====================== 年齢トークン正規化（空白→未記載） ======================
+' ピボット列ラベルの「年齢」を正規化する
+' - 空文字/(空白)/(blank) などは "年齢記載なし" に統一
+' - 数字が含まれる場合は数字だけにする（例："35歳"→"35"）
+Private Function NormalizeAgeToken(ByVal s As String) As String
+    Dim t As String: t = Trim$(CStr(s))
+    If t = "" Then
+        NormalizeAgeToken = AGE_LABEL_MISSING
+        Exit Function
+    End If
+
+    Dim u As String: u = UCase$(t)
+    If u = "(空白)" Or u = "(BLANK)" Or u = "(EMPTY)" Then
+        NormalizeAgeToken = AGE_LABEL_MISSING
+        Exit Function
+    End If
+
+    Dim digits As String: digits = ExtractDigits(t)
+    If digits = "" Then
+        NormalizeAgeToken = AGE_LABEL_MISSING
+    Else
+        NormalizeAgeToken = digits
+    End If
+End Function
+
+
+' ====================== 年齢区分ヘルパー ======================
+' 仕様例: "<30,31-35,36-40,40<"
+Private Sub ParseAgeBands(ByVal spec As String, ByRef bandsOut As Collection, ByRef orderOut As Collection)
+    Dim s As String: s = Trim$(spec)
+    s = Replace(s, "　", " ")        ' 全角スペース→半角
+    s = Replace(s, "、", ",")        ' 和文読点→半角カンマ
+    s = Replace(s, "，", ",")        ' 全角カンマ→半角
+    s = Replace(s, "～", "-")        ' 全角チルダ→ハイフン
+    s = Replace(s, "?", "-")        ' 全角マイナス→ハイフン
+
+    Set bandsOut = New Collection
+    Set orderOut = New Collection
+
+    Dim tokens() As String, t As Variant
+    tokens = Split(s, ",")
+    For Each t In tokens
+        Dim tok As String: tok = Trim$(CStr(t))
+        If tok <> "" Then
+            Dim band As Object: Set band = CreateObject("Scripting.Dictionary")
+            ' band: minSet/minVal/minIncl, maxSet/maxVal/maxIncl, label
+            band("minSet") = False: band("maxSet") = False
+            band("minIncl") = False: band("maxIncl") = False
+            band("label") = tok
+
+            If Left$(tok, 1) = "<" Then
+                ' <N  → N未満（上限のみ、未満）
+                band("maxSet") = True: band("maxVal") = CLng(Mid$(tok, 2))
+                band("maxIncl") = False
+            ElseIf Right$(tok, 1) = "<" Then
+                ' N<  → Nより大（下限のみ、より大）
+                band("minSet") = True: band("minVal") = CLng(Left$(tok, Len(tok) - 1))
+                band("minIncl") = False
+            ElseIf InStr(tok, "-") > 0 Then
+                ' A-B → 両端含む
+                Dim p() As String: p = Split(tok, "-")
+                band("minSet") = True: band("minVal") = CLng(Trim$(p(0))): band("minIncl") = True
+                band("maxSet") = True: band("maxVal") = CLng(Trim$(p(1))): band("maxIncl") = True
+            Else
+                ' 単数（例: "35"）→ その年齢のみ（含む）
+                band("minSet") = True: band("minVal") = CLng(tok): band("minIncl") = True
+                band("maxSet") = True: band("maxVal") = CLng(tok): band("maxIncl") = True
+            End If
+
+            bandsOut.Add band
+            orderOut.Add band("label")
+        End If
+    Next
+End Sub
+
+' 数値年齢を区分ラベルへ変換（該当なし→"その他"）
+Private Function AgeToBandLabel(ByVal age As Long) As String
+    If Not gUseAgeBands Then
+        AgeToBandLabel = CStr(age): Exit Function
+    End If
+    Dim b As Variant
+    For Each b In gAgeBandDefs
+        Dim ok As Boolean: ok = True
+        If b("minSet") Then
+            If b("minIncl") Then
+                If Not (age >= CLng(b("minVal"))) Then ok = False
+            Else
+                If Not (age > CLng(b("minVal"))) Then ok = False
+            End If
+        End If
+        If ok And b("maxSet") Then
+            If b("maxIncl") Then
+                If Not (age <= CLng(b("maxVal"))) Then ok = False
+            Else
+                If Not (age < CLng(b("maxVal"))) Then ok = False
+            End If
+        End If
+        If ok Then
+            AgeToBandLabel = CStr(b("label"))
+            Exit Function
+        End If
+    Next
+    AgeToBandLabel = AGE_LABEL_OTHER
+End Function
+
+' "35" or "年齢記載なし" → 集計用キー（区分適用）
+Private Function AgeKeyToBucket(ByVal ageKey As String) As String
+    If ageKey = AGE_LABEL_MISSING Then
+        AgeKeyToBucket = AGE_LABEL_MISSING
+        Exit Function
+    End If
+    If Not gUseAgeBands Then
+        AgeKeyToBucket = ageKey
+        Exit Function
+    End If
+    If ageKey Like String(Len(ageKey), "#") Then
+        AgeKeyToBucket = AgeToBandLabel(CLng(ageKey))
+    Else
+        AgeKeyToBucket = AGE_LABEL_MISSING
+    End If
+End Function
+
+' 操作画面へ戻るマクロ（ボタンに割り当て）
+Public Sub BackToOperationSheet()
+    On Error GoTo EH
+    ThisWorkbook.Worksheets(CLINIC_SELECT_SHEET).Activate   ' 既存の定数を利用
+    Exit Sub
+EH:
+    MsgBox "「操作画面」シートが見つかりません。", vbExclamation
+End Sub
+
+' 「移植_年齢別集計」シートの G8 付近に「戻る」ボタンを作成
+Public Sub CreateBackButtonOnOutput()
+    Dim ws As Worksheet
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets(OUTPUT_SHEET_NAME)  ' 既存の出力シート定数を利用
+    On Error GoTo 0
+    If ws Is Nothing Then Exit Sub
+
+    ' 既存ボタンがあれば削除（二重作成を防止）
+    On Error Resume Next
+    ws.Shapes(BACK_BUTTON_NAME).Delete
+    On Error GoTo 0
+
+    ' アンカー位置（G8 の左上）とサイズ
+    Dim tgt As Range
+    Set tgt = ws.Range("G8")
+    Dim w As Single, h As Single
+    w = 150: h = 34   ' お好みで調整可
+
+    ' 角丸長方形のシェイプを追加
+    Dim shp As Shape
+    Set shp = ws.Shapes.AddShape(msoShapeRoundedRectangle, tgt.Left, tgt.Top, w, h)
+
+    ' 見た目とテキスト
+    With shp
+        .name = BACK_BUTTON_NAME
+        .OnAction = "BackToOperationSheet"        ' ← クリック時に呼ぶマクロ名
+        .TextFrame2.TextRange.Characters.Text = "タイトルにもどる"
+        .TextFrame2.VerticalAnchor = msoAnchorMiddle
+        .TextFrame2.TextRange.ParagraphFormat.Alignment = msoAlignCenter
+        .Fill.ForeColor.RGB = RGB(125, 125, 125)  ' 淡いグレー
+        .Line.ForeColor.RGB = RGB(120, 120, 120)  ' 枠線
+        .Line.Weight = 1.5
+        .Shadow.Visible = msoFalse
+        .LockAspectRatio = msoFalse
+    End With
+End Sub
+
+' 行ラベルの当該行が「総計/小計」などの集計行かどうか判定
+Private Function IsAggregatedRow(ByVal rowHdr As Range, ByVal absRow As Long) As Boolean
+    ' 行ラベルの全フィールド列を横なめして、総計/小計/合計を検出
+    Dim firstCol As Long, lastCol As Long, c As Long, v As String
+    If rowHdr Is Nothing Then Exit Function
+
+    firstCol = rowHdr.Column
+    lastCol = rowHdr.Column + rowHdr.Columns.count - 1
+
+    ' 行が行ラベル範囲外なら何もしない
+    If absRow < rowHdr.row Or absRow > rowHdr.row + rowHdr.Rows.count - 1 Then Exit Function
+
+    For c = firstCol To lastCol
+        v = CStr(rowHdr.Worksheet.Cells(absRow, c).value) ' 明示シート参照
+        If IsTotalLabel(v) Then
+            IsAggregatedRow = True
+            Exit Function
+        End If
+    Next c
+End Function
+
