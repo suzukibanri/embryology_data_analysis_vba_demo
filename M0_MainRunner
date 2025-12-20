@@ -1,0 +1,154 @@
+' =============================================================================
+' 本モジュールは、各集計処理を順番に実行するための「実行ハブ（エントリーポイント）」です。
+' 操作画面の入力値（院名・年度）を取得し、グローバル変数に格納した上で、
+' 採卵サマリー／移植サマリー／院別統計レポート等の処理を一括で呼び出します。
+'
+' ※ 本コードはポートフォリオ公開用のデモ版です。
+'    実データ接続、Power Query、データモデル、外部依存部分は含まれていません。
+' =============================================================================
+
+Public cancelFlag As Boolean
+Public gClinicID As String
+Public gClinicName As String
+Public gYear As String
+
+Sub RunAllSteps_OpuSummury()
+
+UserForm1.Show vbModeless
+DoEvents ' フォーム描画
+
+Call opu01_CreateReportSheet
+Call opu02_opuCount
+Call opu03_IVFeggCount
+Call opu04_FertilizationSummary
+Call opu04_FertilizationSummary
+Call opu05_CountGardnerGrades
+Call opu06_STOP_CountGardnerGrades
+
+Unload UserForm1
+
+End Sub
+
+Sub RunAllSteps_ETSummury()
+
+UserForm1.Show vbModeless
+DoEvents ' フォーム描画
+
+Call ET01_CreateReportSheet
+Call ET02_ETcount
+Call ET03_hCG_Counts_Denominator
+Call ET04_hCG_Counts
+Call ET05_GS_Counts_Denominator
+Call ET06_GS_Counts
+Call ET07_FHB_Counts_Denominator
+Call ET08_FHB_Counts
+Call ET09_LB_Counts_Denominator
+Call ET10_LB_Counts
+
+Unload UserForm1
+
+End Sub
+
+Sub RunAllSteps_OPU_ClinicStats()
+
+UserForm1.Show vbModeless
+DoEvents ' フォーム描画
+
+Call SetGlobalVars
+
+If Not CheckGlobalVars() Then
+    ThisWorkbook.Sheets("操作画面").Activate ' ← 操作画面に戻る
+    Unload UserForm1                         ' ← フォームを閉じる
+    Exit Sub
+End If
+
+Call OPU_ClinicStats_01_CreateReportSheet
+Call OPU_ClinicStats_02_OutputTotalOPU
+Call OPU_ClinicStats_03_AgeWoman
+Call OPU_ClinicStats_04_AgeMan
+Call OPU_ClinicStats_05_IVFeggCount
+Call OPU_ClinicStats_06_FertilizationRates
+Call OPU_ClinicStats_07_OutputGardnerStats
+Call OPU_ClinicStats_08_FillEmptyCellsWithDash
+
+Unload UserForm1
+
+End Sub
+Sub RunAllSteps_ET_ClinicStats()
+
+UserForm1.Show vbModeless
+DoEvents ' フォーム描画
+
+    Call SetGlobalVars
+    
+If Not CheckGlobalVars() Then
+    ThisWorkbook.Sheets("操作画面").Activate ' ← 操作画面に戻る
+    Unload UserForm1                         ' ← フォームを閉じる
+    Exit Sub
+End If
+    
+    Call ET_ClinicStats_01_CreateReportSheet
+    Call ET_ClinicStats_02_ETcount
+    Call ET_ClinicStats_03_EtAgeWoman
+    Call ET_ClinicStats_04_AgeWifeHusband
+    Call ET_ClinicStats_05_GardnerByCategory
+    Call ET_ClinicStats_06_Output_hCG_MonthlyRates
+    Call ET_ClinicStats_07_Output_GS_MonthlyRates
+    Call ET_ClinicStats_08_Output_FHB_MonthlyRates
+    Call ET_ClinicStats_09_Output_LB_MonthlyRates
+    
+    Unload UserForm1
+    
+End Sub
+
+' 値をグローバル変数に格納
+Public Sub SetGlobalVars()
+
+    ' 入力元シートの設定
+    Dim wsSummary As Worksheet
+    Set wsSummary = ThisWorkbook.Sheets("操作画面")
+    
+    gClinicID = GetClinicID(wsSummary.Range("C13").value)
+    gClinicName = wsSummary.Range("C13").value
+    gYear = wsSummary.Range("C14").value
+    
+End Sub
+
+Public Function CheckGlobalVars() As Boolean
+    ' 院名と年度の未設定チェック（エラーメッセージは1回のみ）
+
+    ' 院名と ID のチェック
+    If Trim(CStr(gClinicName)) = "" Then
+        MsgBox "院名を入力してください。", vbExclamation
+        CheckGlobalVars = False
+        Exit Function
+    End If
+
+    If Not IsNumeric(gClinicID) Or val(gClinicID) = 0 Then
+        MsgBox "エラー：担当者にご連絡ください（クリニックIDが正しく取得されていません）", vbExclamation
+        CheckGlobalVars = False
+        Exit Function
+    End If
+
+    ' 年度のチェック
+    If Trim(CStr(gYear)) = "" Or Not IsNumeric(gYear) Or val(gYear) = 0 Then
+        MsgBox "年度を入力してください。", vbExclamation
+        CheckGlobalVars = False
+        Exit Function
+    End If
+
+    ' すべて正常
+    CheckGlobalVars = True
+End Function
+
+Sub RefreshAllData()
+'データ更新
+UserForm1.Show vbModeless
+DoEvents ' フォーム描画
+
+    ThisWorkbook.RefreshAll
+    
+    Unload UserForm1
+    MsgBox "全てのデータを更新しました。", vbInformation
+End Sub
+
